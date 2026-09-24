@@ -213,10 +213,14 @@ class OllamaClient:
             elif self.is_cloud:
                 hint = f"Set OLLAMA_API_KEY to an API key from {API_KEYS_URL}."
             else:
-                hint = "To use cloud models through a local Ollama, sign in with `ollama signin`."
+                hint = (
+                    "The Ollama app on this computer is not signed in to ollama.com, so it cannot run cloud "
+                    "models. Run `ollama signin`, or set OLLAMA_API_KEY in backend/.env to use Ollama Cloud "
+                    "directly."
+                )
                 signin_url = _json_field(response, "signin_url")
                 if signin_url:
-                    hint += f" Or open {signin_url}"
+                    hint += f" Sign-in link: {signin_url}"
             return OllamaError(f"Ollama refused the request (HTTP {status}: {detail}). {hint}", status_code=status)
         if status == 404 and model:
             hint = (

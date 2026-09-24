@@ -269,7 +269,7 @@ def test_ocr_explains_ollama_cloud_errors(
         (
             401,
             {"error": "unauthorized", "signin_url": "https://ollama.com/connect?key=abc"},
-            "sign in with `ollama signin`",
+            "not signed in to ollama.com, so it cannot run cloud models. Run `ollama signin`",
         ),
         (404, {"error": "model 'llava:13b' not found"}, "Pull it with `ollama pull llava:13b`"),
     ],

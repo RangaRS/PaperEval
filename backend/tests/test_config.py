@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from app.config import Settings
@@ -12,7 +14,7 @@ def clean_environment(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_defaults_to_a_local_ollama() -> None:
-    settings = Settings.from_env()
+    settings = Settings.from_env(env_file=None)
 
     assert settings.ollama_base_url == "http://localhost:11434"
     assert settings.uses_ollama_cloud is False
@@ -21,7 +23,7 @@ def test_defaults_to_a_local_ollama() -> None:
 def test_an_api_key_defaults_to_ollama_cloud(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OLLAMA_API_KEY", "secret")
 
-    settings = Settings.from_env()
+    settings = Settings.from_env(env_file=None)
 
     assert settings.ollama_base_url == "https://ollama.com"
     assert settings.uses_ollama_cloud is True
@@ -32,17 +34,48 @@ def test_an_explicit_base_url_wins(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OLLAMA_API_KEY", "secret")
     monkeypatch.setenv("OLLAMA_BASE_URL", "gpu-box:11434/")
 
-    assert Settings.from_env().ollama_base_url == "http://gpu-box:11434"
+    assert Settings.from_env(env_file=None).ollama_base_url == "http://gpu-box:11434"
 
 
 def test_a_trailing_api_path_is_dropped(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("OLLAMA_BASE_URL", "https://ollama.com/api/")
 
-    assert Settings.from_env().ollama_base_url == "https://ollama.com"
+    assert Settings.from_env(env_file=None).ollama_base_url == "https://ollama.com"
 
 
 def test_numbers_are_validated(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MAX_PAGES", "lots")
 
     with pytest.raises(ValueError, match="MAX_PAGES must be an integer"):
-        Settings.from_env()
+        Settings.from_env(env_file=None)
+
+
+def test_settings_are_read_from_the_env_file(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("# Ollama Cloud\nOLLAMA_API_KEY=from-file\nOLLAMA_MODEL='gemma4:31b-cloud'\nMAX_PAGES=7\n")
+
+    settings = Settings.from_env(env_file=env_file)
+
+    assert settings.ollama_api_key == "from-file"
+    assert settings.ollama_base_url == "https://ollama.com"
+    assert settings.ollama_model == "gemma4:31b-cloud"
+    assert settings.max_pages == 7
+
+
+def test_environment_variables_win_over_the_env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_text("MAX_PAGES=7\n")
+    monkeypatch.setenv("MAX_PAGES", "9")
+
+    assert Settings.from_env(env_file=env_file).max_pages == 9
+
+
+def test_an_env_file_saved_with_a_byte_order_mark_is_read(tmp_path: Path) -> None:
+    env_file = tmp_path / ".env"
+    env_file.write_bytes("OLLAMA_API_KEY=from-notepad\r\n".encode("utf-8-sig"))
+
+    assert Settings.from_env(env_file=env_file).ollama_api_key == "from-notepad"
+
+
+def test_a_missing_env_file_is_fine(tmp_path: Path) -> None:
+    assert Settings.from_env(env_file=tmp_path / "missing.env").ollama_base_url == "http://localhost:11434"

@@ -42,6 +42,15 @@ export function Header({
   )
 }
 
+/** Whether the Ollama server runs on this computer. */
+function isLocal(url: string | undefined): boolean {
+  try {
+    return ['localhost', '127.0.0.1', '[::1]'].includes(new URL(url ?? '').hostname)
+  } catch {
+    return false
+  }
+}
+
 function ConnectionBadge({
   status,
   checking,
@@ -52,7 +61,7 @@ function ConnectionBadge({
   onRefresh: () => void
 }) {
   const connected = status?.reachable ?? false
-  const name = status?.cloud ? 'Ollama Cloud' : 'Ollama'
+  const name = status?.cloud ? 'Ollama Cloud' : isLocal(status?.base_url) ? 'Local Ollama' : 'Ollama'
   const label = status === null ? 'Connecting…' : connected ? name : `${name} not connected`
   const Icon = status?.cloud ? Cloud : Server
   const detail = status ? `${status.base_url}${status.error ? `\n${status.error}` : ''}` : ''

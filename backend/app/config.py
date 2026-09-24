@@ -1,25 +1,40 @@
-"""Application settings, read from environment variables."""
+"""Application settings, read from environment variables and backend/.env."""
 
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
+from dotenv import dotenv_values
+
 BACKEND_DIR = Path(__file__).resolve().parent.parent
+ENV_FILE = BACKEND_DIR / ".env"
 
 LOCAL_OLLAMA_URL = "http://localhost:11434"
 OLLAMA_CLOUD_URL = "https://ollama.com"
 
 
-def _env_str(name: str, default: str) -> str:
-    value = os.environ.get(name, "").strip()
+def _read_env(env_file: Path | None) -> dict[str, str]:
+    """Values from ``env_file``, if it exists, overridden by real environment variables."""
+    values: dict[str, str] = {}
+    if env_file is not None and env_file.is_file():
+        # utf-8-sig copes with the byte order mark some Windows editors add.
+        file_values = dotenv_values(env_file, encoding="utf-8-sig")
+        values.update({key: value for key, value in file_values.items() if value is not None})
+    values.update(os.environ)
+    return values
+
+
+def _env_str(env: Mapping[str, str], name: str, default: str) -> str:
+    value = env.get(name, "").strip()
     return value or default
 
 
-def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name, "").strip()
+def _env_int(env: Mapping[str, str], name: str, default: int) -> int:
+    raw = env.get(name, "").strip()
     if not raw:
         return default
     try:
@@ -28,8 +43,8 @@ def _env_int(name: str, default: int) -> int:
         raise ValueError(f"Environment variable {name} must be an integer, got {raw!r}") from exc
 
 
-def _env_float(name: str, default: float) -> float:
-    raw = os.environ.get(name, "").strip()
+def _env_float(env: Mapping[str, str], name: str, default: float) -> float:
+    raw = env.get(name, "").strip()
     if not raw:
         return default
     try:
@@ -85,20 +100,22 @@ class Settings:
         return is_ollama_cloud_url(self.ollama_base_url)
 
     @classmethod
-    def from_env(cls) -> Settings:
-        api_key = os.environ.get("OLLAMA_API_KEY", "").strip()
+    def from_env(cls, env_file: Path | None = ENV_FILE) -> Settings:
+        """Read the settings from environment variables, falling back to those in ``env_file``."""
+        env = _read_env(env_file)
+        api_key = env.get("OLLAMA_API_KEY", "").strip()
         # An API key is only needed to call Ollama Cloud directly, so default to it.
         default_url = OLLAMA_CLOUD_URL if api_key else LOCAL_OLLAMA_URL
         return cls(
-            ollama_base_url=_normalize_url(_env_str("OLLAMA_BASE_URL", default_url)),
+            ollama_base_url=_normalize_url(_env_str(env, "OLLAMA_BASE_URL", default_url)),
             ollama_api_key=api_key,
-            ollama_model=_env_str("OLLAMA_MODEL", ""),
-            ollama_timeout=_env_float("OLLAMA_TIMEOUT", cls.ollama_timeout),
-            ollama_num_ctx=_env_int("OLLAMA_NUM_CTX", cls.ollama_num_ctx),
-            data_dir=Path(_env_str("DATA_DIR", str(cls.data_dir))).expanduser(),
-            frontend_dist=Path(_env_str("FRONTEND_DIST", str(cls.frontend_dist))).expanduser(),
-            pdf_dpi=_env_int("PDF_DPI", cls.pdf_dpi),
-            max_upload_mb=_env_int("MAX_UPLOAD_MB", cls.max_upload_mb),
-            max_pages=_env_int("MAX_PAGES", cls.max_pages),
-            ocr_max_image_side=_env_int("OCR_MAX_IMAGE_SIDE", cls.ocr_max_image_side),
+            ollama_model=_env_str(env, "OLLAMA_MODEL", ""),
+            ollama_timeout=_env_float(env, "OLLAMA_TIMEOUT", cls.ollama_timeout),
+            ollama_num_ctx=_env_int(env, "OLLAMA_NUM_CTX", cls.ollama_num_ctx),
+            data_dir=Path(_env_str(env, "DATA_DIR", str(cls.data_dir))).expanduser(),
+            frontend_dist=Path(_env_str(env, "FRONTEND_DIST", str(cls.frontend_dist))).expanduser(),
+            pdf_dpi=_env_int(env, "PDF_DPI", cls.pdf_dpi),
+            max_upload_mb=_env_int(env, "MAX_UPLOAD_MB", cls.max_upload_mb),
+            max_pages=_env_int(env, "MAX_PAGES", cls.max_pages),
+            ocr_max_image_side=_env_int(env, "OCR_MAX_IMAGE_SIDE", cls.ocr_max_image_side),
         )

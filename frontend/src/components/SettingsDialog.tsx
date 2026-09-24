@@ -184,8 +184,9 @@ export function SettingsDialog({
             <p className="hint">Checking the connection…</p>
           )}
           <p className="hint">
-            The server and API key are set on the backend with the <code>OLLAMA_BASE_URL</code> and{' '}
-            <code>OLLAMA_API_KEY</code> environment variables. The key never reaches the browser.
+            To use Ollama Cloud directly, put <code>OLLAMA_API_KEY=your-key</code> in <code>backend/.env</code> and
+            restart the backend (<code>OLLAMA_BASE_URL</code> chooses another server). The key never reaches the
+            browser.
           </p>
         </section>
       </div>

@@ -56,10 +56,12 @@ The browser never talks to Ollama directly, so your API key stays on the server.
    source .venv/bin/activate          # Windows: .venv\Scripts\activate
    pip install -r requirements.txt
    cp .env.example .env               # then put your key in .env: OLLAMA_API_KEY=...
-   uvicorn app.main:app --reload --env-file .env
+   uvicorn app.main:app --reload
    ```
 
-   The backend runs on <http://localhost:8000>. Its API docs are at <http://localhost:8000/docs>.
+   The backend reads `backend/.env` when it starts. It runs on <http://localhost:8000>, and its API docs are at
+   <http://localhost:8000/docs>. When it starts, it prints which Ollama it uses: `Using Ollama Cloud at
+   https://ollama.com (with an API key)` means your key was found.
 
 3. **Start the frontend** in a second terminal:
 
@@ -126,14 +128,15 @@ Build the frontend once. When `frontend/dist` exists, the backend serves the app
 
 ```bash
 cd frontend && npm run build
-cd ../backend && uvicorn app.main:app --env-file .env
+cd ../backend && uvicorn app.main:app
 ```
 
 Then open <http://localhost:8000>. Add `--host 0.0.0.0` to reach it from other machines.
 
 ## Configuration
 
-Set these as environment variables or in `backend/.env`:
+Set these in `backend/.env` or as environment variables (which take precedence). Restart the backend after
+changing them.
 
 | Variable | Default | Description |
 |---|---|---|
