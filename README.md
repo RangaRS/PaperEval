@@ -65,9 +65,12 @@ The browser never talks to Ollama directly, so your API key stays on the server.
 
    ```bash
    cd frontend
-   npm install
+   npm ci
    npm run dev
    ```
+
+   `npm ci` installs exactly the versions listed in `package-lock.json` and never changes that file, so later
+   `git pull`s aren't blocked by local changes to it.
 
 4. Open <http://localhost:5173>, choose a vision model at the top (for example `qwen3-vl:235b`), upload a file,
    and press **Extract** on a page.
@@ -98,6 +101,20 @@ With an API key the app talks to ollama.com directly, where cloud models are nam
 that ollama.com shows (for example `qwen3-vl:235b` rather than `qwen3-vl:235b-cloud`). The app removes that
 suffix for you, so either name works. A model you choose is always tried, even if the server's information says it
 cannot read images.
+
+## Updating
+
+```bash
+git pull
+cd frontend
+npm ci                                  # only needed when package.json changed
+cd ../backend
+pip install -r requirements.txt         # only needed when requirements.txt changed
+```
+
+Stop `npm run dev` before running `npm ci`: on Windows, the running dev server keeps files open and the reinstall
+fails. If `git pull` says your local changes to `frontend/package-lock.json` would be overwritten, an earlier
+`npm install` rewrote that file. Discard the change with `git restore frontend/package-lock.json` and pull again.
 
 ## Running as a single server
 
