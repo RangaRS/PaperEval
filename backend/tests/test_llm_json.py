@@ -54,3 +54,9 @@ def test_the_users_sample_survives() -> None:
 def test_not_json_at_all() -> None:
     with pytest.raises(ValueError):
         loads_llm_json("I could not read the page.")
+
+
+def test_a_list_and_a_code_block_after_other_text() -> None:
+    assert loads_llm_json('[{"a": 1}, {"a": 2}]') == [{"a": 1}, {"a": 2}]
+    assert loads_llm_json('The key:\n[{"a": 1}, {"a": 2}]\nDone.') == [{"a": 1}, {"a": 2}]
+    assert loads_llm_json('Sure! Here it is:\n```json\n{"a": [1, 2]}\n```\nAnything else?') == {"a": [1, 2]}

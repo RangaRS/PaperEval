@@ -143,8 +143,11 @@ that the server does offer.
 
 1. **Create an answer key.** Open the **Answer keys** tab and press **New answer key**, then fill in each question:
    its number, the question, the model answer, the marking key and its marks. Or:
-   - **From a document:** upload the answer key (a question paper with answers and a marking scheme) and a model
-     reads its questions, answers, marking scheme and marks. Check what it read, and set any marks it missed.
+   - **From a document:** upload the answer key (a question paper with answers and a marking scheme). The text of
+     every page is extracted first, one page at a time, and then all of it goes to a model, which lists each
+     question with its answer, marking scheme and marks. The dialog shows each page's progress and how much the
+     model has written. If the model finds no questions, the dialog shows what it answered and the text it was
+     sent, so you can see why. Check what it read, and set any marks it missed.
    - **Import JSON:** load a file in the [answer key format](#answer-key-format).
 
    Write maths in LaTeX (`$\frac{a}{b}$`); **Preview** shows it typeset. Every question needs its marks before
@@ -276,7 +279,7 @@ Answer keys and evaluations:
 |---|---|---|
 | `GET` | `/api/exams` | All answer keys, with their number of questions and total marks |
 | `POST` | `/api/exams` | Create an answer key; body `{"name": "...", "questions": [...]}` |
-| `POST` | `/api/exams/from-document` | Read an answer key from a document whose pages have text; body `{"document_id": "...", "model": "..."}` |
+| `POST` | `/api/exams/from-document` | Read an answer key from a document whose pages have text; body `{"document_id": "...", "model": "..."}`. Streams NDJSON: `start`, `progress`, then `done` with the answer key or `error` with the model's answer |
 | `GET` `PUT` `DELETE` | `/api/exams/{id}` | One answer key; deleting it also deletes the marks given with it |
 | `GET` | `/api/exams/{id}/results.csv` | Every evaluated script's marks, as CSV |
 | `POST` | `/api/documents/{id}/evaluations` | Evaluate a script; body `{"exam_id": "...", "model": "..."}`. Streams NDJSON |
@@ -294,8 +297,13 @@ An evaluation streams these events:
 {"type": "done", "evaluation": {..., "marks": 7.5, "max_marks": 10, "complete": true}}
 ```
 
-or an `error` event. Rate limits and overloaded servers are retried twice; an invalid key, a model outside your
-plan or an unknown model stops the evaluation, and the answers not yet marked can be marked later.
+or an `error` event. While the script is split, `progress` events say how much the model has written. Rate limits
+and overloaded servers are retried twice; an invalid key, a model outside your plan or an unknown model stops the
+evaluation, and the answers not yet marked can be marked later.
+
+The models are asked for JSON in a set shape, but their answers are read leniently: a bare list, sections such as
+Part A and Part B, sub-questions and other field names all work. An answer that can't be used is asked for once
+more without a JSON schema, since some servers ignore the schema and models sometimes give up inside one.
 
 ## Development
 

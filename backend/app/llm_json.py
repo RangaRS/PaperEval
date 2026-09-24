@@ -24,24 +24,26 @@ _LATEX_COMMANDS = frozenset(
 )
 _LETTERS = re.compile(r"[A-Za-z]+")
 _HEX4 = re.compile(r"[0-9a-fA-F]{4}")
-_FENCE = re.compile(r"^```[a-zA-Z]*\s*\n(.*?)\n?```$", re.DOTALL)
+_FENCE = re.compile(r"```[a-zA-Z]*[ \t]*\n(.*?)\n?```", re.DOTALL)
 
 
 def loads_llm_json(text: str) -> Any:
-    """Parse the JSON object in a model's answer.
+    """Parse the JSON in a model's answer: an object, or a list.
 
     Accepts answers wrapped in a Markdown code block or surrounded by other
     text, raw line breaks inside strings, and LaTeX whose backslashes were not
-    escaped. Raises ValueError when no JSON object can be read.
+    escaped. Raises ValueError when no JSON can be read.
     """
     text = text.strip()
-    fenced = _FENCE.match(text)
-    if fenced:
-        text = fenced.group(1).strip()
     candidates = [text]
-    start, end = text.find("{"), text.rfind("}")
-    if 0 <= start < end:
-        candidates.append(text[start : end + 1])
+    fenced = _FENCE.search(text)
+    if fenced:
+        candidates.append(fenced.group(1).strip())
+    # The outermost object or list, ignoring any text around it.
+    for opening, closing in ("{}", "[]"):
+        start, end = text.find(opening), text.rfind(closing)
+        if 0 <= start < end:
+            candidates.append(text[start : end + 1])
     for candidate in candidates:
         try:
             return json.loads(_escape_latex(candidate), strict=False)

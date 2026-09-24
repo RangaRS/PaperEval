@@ -19,6 +19,7 @@ import type { DocumentInfo, EvaluatedAnswer, Evaluation, EvaluationSummary, Exam
 import { isRunning, type EvaluationRun, type RunStep } from '../evaluationRunner'
 import { formatMarks, questionLabel } from '../exams'
 import { useElapsedSeconds } from '../hooks'
+import { pageKey, type OcrJob } from '../ocrQueue'
 import { formatElapsed, pluralize } from '../utils'
 import { MarksField } from './NumberField'
 import { RichText } from './RichText'
@@ -29,6 +30,8 @@ export interface EvaluationPanelProps {
   summaries: EvaluationSummary[]
   details: Record<string, Evaluation>
   run: EvaluationRun | undefined
+  /** The page reading jobs, to show which page is being read. */
+  jobs: ReadonlyMap<string, OcrJob>
   exams: ExamSummary[]
   examDetails: Record<string, Exam>
   preview: boolean
@@ -58,6 +61,7 @@ export function EvaluationPanel({
   summaries,
   details,
   run,
+  jobs,
   exams,
   examDetails,
   preview,
@@ -168,7 +172,7 @@ export function EvaluationPanel({
       </div>
 
       <div className="result-body evaluation-body">
-        {run && <RunStatus run={run} document={document} onDismiss={onDismissRun} />}
+        {run && <RunStatus run={run} document={document} jobs={jobs} onDismiss={onDismissRun} />}
 
         {!summary && !running && run?.status !== 'error' && (
           <div className="result-empty">
@@ -294,10 +298,12 @@ const STEP_LABELS: Record<RunStep, string> = {
 function RunStatus({
   run,
   document,
+  jobs,
   onDismiss,
 }: {
   run: EvaluationRun
   document: DocumentInfo
+  jobs: ReadonlyMap<string, OcrJob>
   onDismiss: () => void
 }) {
   const seconds = useElapsedSeconds(isRunning(run) ? run.stepStartedAt : undefined)
@@ -321,6 +327,12 @@ function RunStatus({
           {run.status === 'error' ? (
             <>
               <strong>Evaluation failed.</strong> {run.error}
+              {run.reply !== undefined && (
+                <details className="key-details">
+                  <summary>What the model answered</summary>
+                  <pre>{run.reply || '(nothing)'}</pre>
+                </details>
+              )}
             </>
           ) : (
             'Stopped. The answers marked so far are kept.'
@@ -337,9 +349,15 @@ function RunStatus({
   const steps: RunStep[] = run.request.kind === 'evaluate' ? ['extract', 'split', 'mark'] : ['mark']
   const current = run.step ? steps.indexOf(run.step) : -1
   const withText = document.pages.filter((page) => page.ocr).length
+  const reading = document.pages
+    .map((page) => jobs.get(pageKey(document.id, page.number)))
+    .find((job) => job?.status === 'running')
+  const written = run.received ? ` · ${run.received.toLocaleString()} characters written` : ''
   const detail: Record<RunStep, string> = {
-    extract: `${withText} of ${pluralize(document.pages.length, 'page')} have text`,
-    split: formatElapsed(seconds),
+    extract: reading
+      ? `page ${reading.pageNumber} of ${document.pages.length}: ${reading.text.length.toLocaleString()} characters so far`
+      : `${withText} of ${pluralize(document.pages.length, 'page')} have text`,
+    split: `${formatElapsed(seconds)}${written}${(run.attempt ?? 1) > 1 ? ' · asked again' : ''}`,
     mark: `${run.toMark - run.marking.length} of ${run.toMark} · ${formatElapsed(seconds)}`,
   }
   return (

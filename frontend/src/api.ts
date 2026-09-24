@@ -154,10 +154,20 @@ export interface EvaluationSummary extends Omit<Evaluation, 'answers'> {
 /** Progress events streamed while a script is evaluated or its answers are marked. */
 export type EvaluationEvent =
   | { type: 'status'; step: 'split' }
+  /** How much of its answer the model has written; attempt 2 is a second try without a fixed format. */
+  | { type: 'progress'; step: 'split'; attempt: number; characters: number }
   | { type: 'split'; evaluation: Evaluation }
   | { type: 'answer'; answer: EvaluatedAnswer }
   | { type: 'done'; evaluation: Evaluation }
-  | { type: 'error'; message: string }
+  /** `reply` is the model's answer, when it could not be used. */
+  | { type: 'error'; message: string; reply?: string }
+
+/** Progress events streamed while a model reads an answer key from a document's text. */
+export type AnswerKeyEvent =
+  | { type: 'start'; model: string; pages: number; characters: number }
+  | { type: 'progress'; attempt: number; characters: number }
+  | { type: 'done'; exam: Exam }
+  | { type: 'error'; message: string; reply?: string }
 
 /** Progress events streamed while a page is being read. */
 export type OcrEvent =
@@ -255,9 +265,9 @@ export const api = {
 
   deleteExam: (examId: string) => request<void>(`/api/exams/${examId}`, { method: 'DELETE' }),
 
-  /** Have a model read an answer key from a document whose text has been extracted. */
+  /** Have a model read an answer key from a document whose text has been extracted, yielding its progress. */
   examFromDocument: (options: { document_id: string; model: string }, signal?: AbortSignal) =>
-    request<Exam>('/api/exams/from-document', { ...jsonBody(options), signal }),
+    streamEvents<AnswerKeyEvent>('/api/exams/from-document', options, signal),
 
   /** Every evaluated script's marks, as a CSV spreadsheet. */
   async resultsCsv(examId: string): Promise<Blob> {

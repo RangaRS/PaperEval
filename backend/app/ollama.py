@@ -10,17 +10,27 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import logging
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import aclosing
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeVar
 
 import httpx
 
 from .config import is_ollama_cloud_url
 from .llm_json import loads_llm_json
 
+logger = logging.getLogger("uvicorn.error")
+
+T = TypeVar("T")
+
 API_KEYS_URL = "https://ollama.com/settings/keys"
+
+# Errors worth another try after a pause: rate limits and an overloaded server.
+RETRY_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
+RETRY_DELAYS_SECONDS = (5.0, 20.0)
 
 # How long to remember what a model supports, and how soon to ask again after a failed lookup.
 _CAPABILITIES_TTL_SECONDS = 600
@@ -35,6 +45,25 @@ class OllamaError(Exception):
     def __init__(self, message: str, *, status_code: int | None = None) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+class UnusableReplyError(OllamaError):
+    """The model answered, but not in a form that can be used. Keeps the answer, to show what went wrong."""
+
+    def __init__(self, message: str, *, reply: str) -> None:
+        super().__init__(message)
+        self.reply = reply
+
+
+@dataclass(frozen=True)
+class ChatText:
+    """A model's whole answer."""
+
+    text: str
+    # Why the model stopped: "stop", or "length" when it reached its output limit.
+    done_reason: str | None = None
+    # How much it reasoned, for models that reason although they were asked not to.
+    thinking_characters: int = 0
 
 
 @dataclass(frozen=True)
@@ -134,9 +163,8 @@ class OllamaClient:
         think: bool | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Send one image with a prompt and yield the streamed response chunks."""
-        model = self.api_model_name(model)
         payload: dict[str, Any] = {
-            "model": model,
+            "model": self.api_model_name(model),
             "messages": [{"role": "user", "content": prompt, "images": [image_base64]}],
             "stream": True,
         }
@@ -144,6 +172,74 @@ class OllamaClient:
             payload["options"] = options
         if think is not None:
             payload["think"] = think
+        async with aclosing(self._chat_chunks(payload, model=model)) as chunks:
+            async for chunk in chunks:
+                yield chunk
+
+    async def chat_text(
+        self,
+        *,
+        model: str,
+        system: str,
+        prompt: str,
+        schema: dict[str, Any] | None = None,
+        num_ctx: int = 0,
+        on_text: Callable[[str], None] | None = None,
+    ) -> ChatText:
+        """Ask a question and return the whole answer.
+
+        With a ``schema``, the model is asked to answer in JSON of that shape.
+        The answer is streamed, even though only the whole of it is returned:
+        ``on_text`` receives each piece as it arrives, and long answers keep the
+        connection busy instead of leaving it idle for minutes, which proxies
+        and gateways may cut off.
+        """
+        options: dict[str, Any] = {"temperature": 0}
+        if num_ctx > 0:
+            options["num_ctx"] = num_ctx
+        payload: dict[str, Any] = {
+            "model": self.api_model_name(model),
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+            "stream": True,
+            "think": False,
+            "options": options,
+        }
+        if schema is not None:
+            payload["format"] = schema
+        parts: list[str] = []
+        thinking = 0
+        done_reason = None
+        async with aclosing(self._chat_chunks(payload, model=model)) as chunks:
+            async for chunk in chunks:
+                message = chunk.get("message") if isinstance(chunk.get("message"), dict) else {}
+                piece = message.get("content")
+                if isinstance(piece, str) and piece:
+                    parts.append(piece)
+                    if on_text is not None:
+                        on_text(piece)
+                if isinstance(message.get("thinking"), str):
+                    thinking += len(message["thinking"])
+                if chunk.get("done"):
+                    reason = chunk.get("done_reason")
+                    done_reason = reason if isinstance(reason, str) else None
+                    break
+        return ChatText("".join(parts), done_reason, thinking)
+
+    async def chat_json(
+        self,
+        *,
+        model: str,
+        system: str,
+        prompt: str,
+        schema: dict[str, Any],
+        num_ctx: int = 0,
+    ) -> Any:
+        """Ask for an answer in JSON shaped like ``schema``, and return it parsed."""
+        answer = await self.chat_text(model=model, system=system, prompt=prompt, schema=schema, num_ctx=num_ctx)
+        return parse_json_answer(answer, model)
+
+    async def _chat_chunks(self, payload: dict[str, Any], *, model: str) -> AsyncIterator[dict[str, Any]]:
+        """Post a streaming chat request and yield the chunks of the answer. Errors name ``model``."""
         try:
             async with self._http.stream("POST", "/api/chat", json=payload) as response:
                 if response.status_code != 200:
@@ -157,62 +253,6 @@ class OllamaClient:
             raise OllamaError(f"Ollama did not respond within {self.timeout:g} seconds.") from exc
         except httpx.HTTPError as exc:
             raise OllamaError(self._connection_error_message(exc)) from exc
-
-    async def chat_json(
-        self,
-        *,
-        model: str,
-        system: str,
-        prompt: str,
-        schema: dict[str, Any],
-        num_ctx: int = 0,
-    ) -> Any:
-        """Ask for an answer in JSON shaped like ``schema``, and return it parsed.
-
-        The answer is streamed, even though only the whole of it is used: long
-        answers then keep the connection busy instead of leaving it idle for
-        minutes, which proxies and gateways may cut off.
-        """
-        options: dict[str, Any] = {"temperature": 0}
-        if num_ctx > 0:
-            options["num_ctx"] = num_ctx
-        payload = {
-            "model": self.api_model_name(model),
-            "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
-            "stream": True,
-            "format": schema,
-            "think": False,
-            "options": options,
-        }
-        parts: list[str] = []
-        done_reason = None
-        try:
-            async with self._http.stream("POST", "/api/chat", json=payload) as response:
-                if response.status_code != 200:
-                    await response.aread()
-                    raise self._response_error(response, model=model)
-                async for line in response.aiter_lines():
-                    chunk = _parse_chunk(line)
-                    if chunk is None:
-                        continue
-                    message = chunk.get("message") if isinstance(chunk.get("message"), dict) else {}
-                    if isinstance(message.get("content"), str):
-                        parts.append(message["content"])
-                    if chunk.get("done"):
-                        done_reason = chunk.get("done_reason")
-                        break
-        except httpx.TimeoutException as exc:
-            raise OllamaError(f"Ollama did not respond within {self.timeout:g} seconds.") from exc
-        except httpx.HTTPError as exc:
-            raise OllamaError(self._connection_error_message(exc)) from exc
-        try:
-            return loads_llm_json("".join(parts))
-        except ValueError:
-            if done_reason == "length":
-                raise OllamaError(f"{model} ran out of room before finishing its answer.") from None
-            raise OllamaError(
-                f"{model} did not answer in the expected format. Try again or use another model."
-            ) from None
 
     async def _request_json(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         try:
@@ -291,6 +331,37 @@ class OllamaClient:
                 status_code=status,
             )
         return OllamaError(f"Ollama returned an error (HTTP {status}: {detail}).", status_code=status)
+
+
+def parse_json_answer(answer: ChatText, model: str) -> Any:
+    """The JSON in a model's answer. Raises UnusableReplyError, saying why, when there is none."""
+    if not answer.text.strip():
+        if answer.thinking_characters:
+            message = f"{model} only returned its reasoning, without an answer. Try again, or choose another model."
+        else:
+            message = f"{model} returned an empty answer. Try again, or choose another model."
+        raise UnusableReplyError(message, reply="")
+    try:
+        return loads_llm_json(answer.text)
+    except ValueError:
+        if answer.done_reason == "length":
+            message = f"{model} reached its output limit before it finished its answer."
+        else:
+            message = f"{model} did not answer in the expected format. Try again, or choose another model."
+        raise UnusableReplyError(message, reply=answer.text) from None
+
+
+async def with_retries(call: Callable[[], Awaitable[T]]) -> T:
+    """Run ``call``, trying again after a pause when Ollama is rate limited or overloaded."""
+    for delay in (*RETRY_DELAYS_SECONDS, None):
+        try:
+            return await call()
+        except OllamaError as exc:
+            if delay is None or exc.status_code not in RETRY_STATUS_CODES:
+                raise
+            logger.info("Ollama answered HTTP %s; trying again in %g seconds.", exc.status_code, delay)
+            await asyncio.sleep(delay)
+    raise AssertionError("unreachable")
 
 
 def _parse_chunk(line: str) -> dict[str, Any] | None:

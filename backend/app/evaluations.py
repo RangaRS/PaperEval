@@ -9,29 +9,26 @@ import asyncio
 import logging
 import threading
 import uuid
-from collections.abc import AsyncIterator, Awaitable, Callable, Iterable
+from collections.abc import AsyncIterator, Callable, Iterable
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Literal, TypeVar
+from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError, computed_field
 
 from .exams import Exam, Question
-from .grading import document_text, mark_answer, split_answers
-from .ollama import OllamaClient, OllamaError
+from .grading import Progress, document_text, mark_answer, progress_events, split_answers
+from .ollama import OllamaClient, OllamaError, UnusableReplyError
 from .storage import ID_PATTERN, StoredDocument, utc_now, write_json_atomic
 
 logger = logging.getLogger("uvicorn.error")
-
-T = TypeVar("T")
 
 AnswerStatus = Literal["pending", "graded", "unanswered", "error"]
 
 # Errors that the next answer would run into as well: a bad API key, no credit, an unknown model.
 _FATAL_STATUS_CODES = frozenset({401, 402, 403, 404})
-# Errors that are worth another try after a pause: rate limits and an overloaded server.
-_RETRY_STATUS_CODES = frozenset({429, 500, 502, 503, 504})
-RETRY_DELAYS_SECONDS = (5.0, 20.0)
+# How much of a model's unusable answer to send back, to show what went wrong.
+REPLY_LIMIT = 20_000
 
 
 class EvaluatedAnswer(BaseModel):
@@ -210,21 +207,31 @@ async def evaluation_events(
     far; ``grading_events`` can mark the rest.
     """
     yield {"type": "status", "step": "split"}
-    try:
-        script = await with_retries(
-            lambda: split_answers(
-                ollama,
-                model=model,
-                questions=exam.questions,
-                script=document_text(document),
-                page_count=len(document.pages),
-                num_ctx=num_ctx,
-            )
+    progress = Progress()
+    splitting = asyncio.ensure_future(
+        split_answers(
+            ollama,
+            model=model,
+            questions=exam.questions,
+            script=document_text(document),
+            page_count=len(document.pages),
+            num_ctx=num_ctx,
+            progress=progress,
         )
+    )
+    try:
+        async for event in progress_events(splitting, progress):
+            yield {**event, "step": "split"}
+        script = splitting.result()
     except OllamaError as exc:
         logger.warning("Splitting %s into answers with %s failed: %s", document.filename, model, exc)
-        yield {"type": "error", "message": f"Could not split the script into answers: {exc}"}
+        event = {"type": "error", "message": f"Could not split the script into answers: {exc}"}
+        if isinstance(exc, UnusableReplyError):
+            event["reply"] = exc.reply[:REPLY_LIMIT]
+        yield event
         return
+    finally:
+        splitting.cancel()
 
     answers = []
     for question in exam.questions:
@@ -310,9 +317,7 @@ async def grading_events(
             return answer.question_id, {**update, **unanswered}, None
         async with limit:
             try:
-                mark = await with_retries(
-                    lambda: mark_answer(ollama, model=model, question=question, answer=answer.answer, num_ctx=num_ctx)
-                )
+                mark = await mark_answer(ollama, model=model, question=question, answer=answer.answer, num_ctx=num_ctx)
             except OllamaError as exc:
                 logger.warning("Marking question %s with %s failed: %s", question.number or question.id, model, exc)
                 return answer.question_id, failed(answer, str(exc)), exc
@@ -344,19 +349,6 @@ async def grading_events(
         for task in tasks:
             task.cancel()
     yield {"type": "done", "evaluation": evaluation.model_dump(mode="json")}
-
-
-async def with_retries(call: Callable[[], Awaitable[T]]) -> T:
-    """Run ``call``, trying again after a pause when Ollama is rate limited or overloaded."""
-    for delay in (*RETRY_DELAYS_SECONDS, None):
-        try:
-            return await call()
-        except OllamaError as exc:
-            if delay is None or exc.status_code not in _RETRY_STATUS_CODES:
-                raise
-            logger.info("Ollama answered HTTP %s; trying again in %g seconds.", exc.status_code, delay)
-            await asyncio.sleep(delay)
-    raise AssertionError("unreachable")
 
 
 def question_labels(questions: Iterable[Question]) -> list[str]:

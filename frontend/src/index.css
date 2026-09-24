@@ -2433,6 +2433,200 @@ a.btn {
   margin-left: auto;
 }
 
+/* ---------- Reading an answer key ---------- */
+
+.checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.checkbox input {
+  accent-color: var(--accent);
+}
+
+.key-run-document {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 14px;
+  overflow-wrap: anywhere;
+}
+
+.key-run-document svg {
+  flex: none;
+  color: var(--muted);
+}
+
+.key-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.key-step {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.key-step.is-running {
+  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
+  background: color-mix(in srgb, var(--accent-soft) 45%, transparent);
+}
+
+.key-step.is-failed {
+  border-color: color-mix(in srgb, var(--danger) 35%, transparent);
+}
+
+.key-step.is-waiting .key-step-title {
+  color: var(--muted);
+}
+
+.key-step-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 8px;
+  margin: 0;
+}
+
+.key-step-title .muted {
+  font-size: 12.5px;
+}
+
+.state-done {
+  color: var(--success);
+}
+
+.state-running {
+  color: var(--accent);
+}
+
+.state-failed {
+  color: var(--danger);
+}
+
+.state-waiting {
+  color: var(--faint);
+}
+
+.page-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 260px;
+  margin: 10px 0 0;
+  padding: 0 0 0 25px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.page-step {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 2px 8px;
+  font-size: 13px;
+}
+
+.page-step > svg {
+  flex: none;
+}
+
+.page-step-name {
+  min-width: 56px;
+  font-weight: 500;
+}
+
+.page-step-detail {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+.page-step.is-running .page-step-detail {
+  color: var(--accent-soft-text);
+}
+
+.page-step.is-failed .page-step-detail {
+  color: var(--danger);
+}
+
+.page-step-warning,
+.key-note {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--warning);
+}
+
+.key-error {
+  margin: 10px 0 0 25px;
+  color: var(--danger);
+  overflow-wrap: anywhere;
+}
+
+.key-step > .hint {
+  margin: 8px 0 0 25px;
+}
+
+.key-read-progress {
+  margin: 8px 0 0 25px;
+  font-size: 13px;
+}
+
+.key-read-progress p {
+  margin: 2px 0;
+}
+
+.elapsed-inline {
+  color: var(--faint);
+  font-variant-numeric: tabular-nums;
+}
+
+.key-details {
+  margin: 10px 0 0 25px;
+  font-size: 13px;
+}
+
+.notice .key-details {
+  margin-left: 0;
+}
+
+.key-details summary {
+  width: fit-content;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.key-details summary:hover {
+  color: var(--text);
+}
+
+.key-details pre {
+  max-height: 260px;
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  overflow: auto;
+  border-radius: 6px;
+  background: var(--surface-2);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* ---------- Drag and drop ---------- */
 
 .drop-overlay {

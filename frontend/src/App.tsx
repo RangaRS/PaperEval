@@ -199,12 +199,15 @@ export default function App() {
     documentsRef.current = documents
   }, [documents])
 
-  /** Extract the text of a paper's pages that have none, as needed before it is evaluated. */
+  /**
+   * Extract the text of a document's pages one by one: the pages that have none,
+   * or with `all`, every page. Resolves when they are done; rejects if any failed.
+   */
   const prepareDocument = useCallback(
-    async (documentId: string, signal: AbortSignal) => {
+    async (documentId: string, signal: AbortSignal, options?: { all?: boolean }) => {
       const document = documentsRef.current.find((candidate) => candidate.id === documentId)
       if (!document) throw new Error('The paper was deleted.')
-      const missing = document.pages.filter((page) => !page.ocr).map((page) => page.number)
+      const missing = document.pages.filter((page) => options?.all || !page.ocr).map((page) => page.number)
       if (missing.length === 0) return
       if (!model) throw new Error('Some pages have no text yet. Choose a vision model at the top to read them.')
       for (const pageNumber of missing) queue.enqueue({ documentId, pageNumber, model, prompt })
@@ -695,6 +698,7 @@ export default function App() {
                   summaries={evaluations.filter((evaluation) => evaluation.document_id === selectedDocument.id)}
                   details={details}
                   run={runs.get(selectedDocument.id)}
+                  jobs={jobs}
                   exams={exams}
                   examDetails={examDetails}
                   preview={answerPreview}
@@ -776,6 +780,7 @@ export default function App() {
         uploading={upload !== null}
         onUpload={uploadFiles}
         prepare={prepareDocument}
+        jobs={jobs}
         onCreated={(exam) => {
           addExam(exam)
           notify(`Read ${pluralize(exam.questions.length, 'question')}. Check them, and set any missing marks.`, 'info')

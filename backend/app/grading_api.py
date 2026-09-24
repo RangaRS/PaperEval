@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
+import logging
 import re
+from collections.abc import AsyncIterator
 from datetime import datetime
 from pathlib import PurePath
 from typing import Any
@@ -25,6 +28,7 @@ from .api import (
     ndjson_response,
 )
 from .evaluations import (
+    REPLY_LIMIT,
     AnswerStatus,
     EvaluatedAnswer,
     Evaluation,
@@ -33,12 +37,13 @@ from .evaluations import (
     evaluation_events,
     grading_events,
     question_labels,
-    with_retries,
 )
 from .exams import Exam, ExamNotFoundError, ExamStore, Question
-from .grading import document_text, format_marks, pages_without_text, read_answer_key
-from .ollama import OllamaError
+from .grading import Progress, document_text, format_marks, pages_without_text, progress_events, read_answer_key
+from .ollama import OllamaClient, OllamaError, UnusableReplyError
 from .storage import StoredDocument
+
+logger = logging.getLogger("uvicorn.error")
 
 router = APIRouter(prefix="/api")
 
@@ -135,26 +140,65 @@ def create_exam(body: ExamIn, exams: ExamStoreDep) -> Exam:
     return exams.create(body.name.strip() or "Untitled answer key", body.questions)
 
 
-@router.post("/exams/from-document", status_code=201)
+@router.post("/exams/from-document")
 async def create_exam_from_document(
     body: ExamFromDocumentRequest,
     settings: SettingsDep,
     store: StoreDep,
     exams: ExamStoreDep,
     ollama: OllamaDep,
-) -> Exam:
-    """Make an answer key from an uploaded document, whose text has been extracted, with an AI model."""
+) -> StreamingResponse:
+    """Make an answer key from an uploaded document with an AI model.
+
+    Every page must have its text extracted. The text of all pages is sent to
+    the model, which returns the questions as JSON. Responds with
+    newline-delimited JSON events: ``start``, with how much text was sent;
+    ``progress`` while the model writes its answer; then ``done`` with the new
+    answer key, or ``error``, with the model's answer when it could not be used.
+    """
     document = load_document(store, body.document_id)
     _require_text(document)
-    model = choose_model(body.model, settings)
-    try:
-        key = await with_retries(
-            lambda: read_answer_key(ollama, model=model, text=document_text(document), num_ctx=settings.ollama_num_ctx)
+    if not any(page.ocr and page.ocr.text.strip() for page in document.pages):
+        raise HTTPException(
+            422, "No text was found on any page of this document. Extract the text again, perhaps with another model."
         )
+    model = choose_model(body.model, settings)
+    return ndjson_response(
+        _answer_key_events(
+            ollama=ollama,
+            exams=exams,
+            document=document,
+            model=model,
+            name=body.name.strip(),
+            num_ctx=settings.ollama_num_ctx,
+        )
+    )
+
+
+async def _answer_key_events(
+    *, ollama: OllamaClient, exams: ExamStore, document: StoredDocument, model: str, name: str, num_ctx: int
+) -> AsyncIterator[dict[str, Any]]:
+    text = document_text(document)
+    yield {"type": "start", "model": model, "pages": len(document.pages), "characters": len(text)}
+    progress = Progress()
+    reading = asyncio.ensure_future(read_answer_key(ollama, model=model, text=text, num_ctx=num_ctx, progress=progress))
+    try:
+        async for event in progress_events(reading, progress):
+            yield event
+        key = reading.result()
     except OllamaError as exc:
-        raise HTTPException(502, f"Could not read the answer key: {exc}") from exc
-    name = body.name.strip() or key.name or PurePath(document.filename).stem or "Answer key"
-    return exams.create(name, key.questions)
+        logger.warning("Reading an answer key from %s with %s failed: %s", document.filename, model, exc)
+        event: dict[str, Any] = {"type": "error", "message": f"Could not read the answer key: {exc}"}
+        if isinstance(exc, UnusableReplyError):
+            event["reply"] = exc.reply[:REPLY_LIMIT]
+        yield event
+        return
+    finally:
+        reading.cancel()
+    exam = await asyncio.to_thread(
+        exams.create, name or key.name or PurePath(document.filename).stem or "Answer key", key.questions
+    )
+    yield {"type": "done", "exam": exam.model_dump(mode="json")}
 
 
 @router.get("/exams/{exam_id}")

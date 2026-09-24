@@ -9,7 +9,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from app import evaluations
+from app import ollama
 from app.grading import MARK_SYSTEM, SPLIT_SYSTEM
 
 from .helpers import FakeOllama, give_text, make_pdf, read_events, upload
@@ -98,7 +98,7 @@ def evaluate(client: TestClient, document: dict[str, Any], exam: dict[str, Any])
     response = client.post(f"/api/documents/{document['id']}/evaluations", json={"exam_id": exam["id"], "model": MODEL})
     assert response.status_code == 200, response.text
     assert response.headers["content-type"].startswith("application/x-ndjson")
-    return read_events(response)
+    return [event for event in read_events(response) if event["type"] != "progress"]
 
 
 def grade(client: TestClient, evaluation_id: str, question_ids: list[str] | None = None) -> list[dict[str, Any]]:
@@ -308,7 +308,7 @@ def test_rate_limited_requests_are_tried_again(
     exam: dict[str, Any],
     script: dict[str, Any],
 ) -> None:
-    monkeypatch.setattr(evaluations, "RETRY_DELAYS_SECONDS", (0.0, 0.0))
+    monkeypatch.setattr(ollama, "RETRY_DELAYS_SECONDS", (0.0, 0.0))
     busy = httpx.Response(429, json={"error": "too many requests"})
     examiner.marks["1"] = [busy, busy, {"feedback": "Correct.", "marks": 2}]
     examiner.marks["3"] = [busy, busy, busy]
@@ -502,3 +502,57 @@ def test_the_results_can_be_downloaded_as_a_spreadsheet(
         ["asha.pdf", "Asha", "21CS042", "2", "0", "2.5", "4.5", "10", "yes"],
     ]
     assert client.get(f"/api/exams/{'0' * 32}/results.csv").status_code == 404
+
+
+def test_answers_in_other_shapes_are_read(
+    client: TestClient, examiner: Examiner, exam: dict[str, Any], script: dict[str, Any]
+) -> None:
+    examiner.split = [
+        {"Question Number": "1", "Page": 1, "Student Answer": "My answer to the first question."},
+        {"question": "Question 3", "pages": "2, 3", "text": "My answer to the third question."},
+    ]
+    examiner.marks["1"] = {"score": "1.5/2", "comment": "Missing the general solution."}
+    examiner.marks["3"] = '```json\n{"marks_awarded": 4, "reason": "Arithmetic slip."}\n```'
+
+    evaluation = evaluate(client, script, exam)[-1]["evaluation"]
+
+    assert [(answer["status"], answer["pages"], answer["marks"]) for answer in evaluation["answers"]] == [
+        ("graded", [1], 1.5),
+        ("unanswered", [], 0),
+        ("graded", [2, 3], 4),
+    ]
+    assert evaluation["answers"][0]["answer"] == "My answer to the first question."
+    assert evaluation["answers"][0]["feedback"] == "Missing the general solution."
+    assert evaluation["answers"][2]["feedback"] == "Arithmetic slip."
+
+
+def test_a_split_without_answers_is_asked_for_again_without_a_schema(
+    client: TestClient, fake_ollama: FakeOllama, examiner: Examiner, exam: dict[str, Any], script: dict[str, Any]
+) -> None:
+    found = examiner.split
+    examiner.split = None
+    fake_reply = examiner.reply
+
+    def reply(payload: dict[str, Any]) -> Any:
+        if payload["messages"][0]["content"] == SPLIT_SYSTEM:
+            return {"student_name": "", "roll_number": "", "answers": []} if "format" in payload else found
+        return fake_reply(payload)
+
+    fake_ollama.json_reply = reply
+
+    evaluation = evaluate(client, script, exam)[-1]["evaluation"]
+
+    assert marks(evaluation) == [("1", "graded", 2), ("2", "unanswered", 0), ("3", "graded", 2.5)]
+    splits = [p for p in fake_ollama.json_payloads() if p["messages"][0]["content"] == SPLIT_SYSTEM]
+    assert ["format" in payload for payload in splits] == [True, False]
+
+
+def test_a_split_that_cannot_be_read_is_reported_with_the_answer(
+    client: TestClient, examiner: Examiner, exam: dict[str, Any], script: dict[str, Any]
+) -> None:
+    examiner.split = "The student did not write anything I can read."
+
+    error = evaluate(client, script, exam)[-1]
+
+    assert error["type"] == "error"
+    assert error["reply"] == "The student did not write anything I can read."

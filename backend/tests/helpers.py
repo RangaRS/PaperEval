@@ -36,9 +36,9 @@ class FakeOllama:
             chat_chunk("", done=True, done_reason="stop", prompt_eval_count=812, eval_count=3),
         ]
         self.requests: list[httpx.Request] = []
-        # Answers to requests for JSON (those with a "format"): a function of the
-        # request payload returning the reply's content (an object to encode, or
-        # raw text), or a whole response to send instead, such as an error.
+        # Answers to requests for JSON (those with a system prompt): a function of
+        # the request payload returning the reply's content (an object to encode,
+        # or raw text), or a whole response to send instead, such as an error.
         self.json_reply: Callable[[dict[str, Any]], Any] = lambda payload: {}
         self.json_done_reason = "stop"
 
@@ -68,7 +68,7 @@ class FakeOllama:
                 return httpx.Response(self.chat_status, json=self.chat_error)
             payload = json.loads(request.content)
             chunks = self.chat_chunks
-            if "format" in payload:
+            if _asks_for_json(payload):
                 reply = self.json_reply(payload)
                 if isinstance(reply, httpx.Response):
                     return reply
@@ -90,7 +90,12 @@ class FakeOllama:
     def json_payloads(self) -> list[dict[str, Any]]:
         """Payloads of the chat requests for JSON answers, in order."""
         payloads = [json.loads(request.content) for request in self.requests_to("/api/chat")]
-        return [payload for payload in payloads if "format" in payload]
+        return [payload for payload in payloads if _asks_for_json(payload)]
+
+
+def _asks_for_json(payload: dict[str, Any]) -> bool:
+    # Page reading sends just an image and a prompt; the JSON requests come with a system prompt.
+    return payload["messages"][0]["role"] == "system"
 
 
 def chat_chunk(content: str, *, done: bool = False, thinking: str | None = None, **extra: Any) -> dict[str, Any]:

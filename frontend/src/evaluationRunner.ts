@@ -37,7 +37,12 @@ export interface EvaluationRun {
   toMark: number
   /** The evaluation, as it is filled in. */
   evaluation?: Evaluation
+  /** While the script is split: how much of its answer the model has written, and which attempt it is. */
+  received?: number
+  attempt?: number
   error?: string
+  /** The model's answer, when it could not be used. */
+  reply?: string
 }
 
 export interface EvaluationRunnerOptions {
@@ -161,7 +166,9 @@ export class EvaluationRunner {
         events = this.options.grade(request, controller.signal)
       }
       for await (const event of events) {
-        if (event.type === 'split') {
+        if (event.type === 'progress') {
+          this.update(documentId, { received: event.characters, attempt: event.attempt })
+        } else if (event.type === 'split') {
           const marking = event.evaluation.answers
             .filter((answer) => answer.status === 'pending')
             .map((answer) => answer.question_id)
@@ -187,7 +194,7 @@ export class EvaluationRunner {
           this.options.onEvaluation(event.evaluation)
           return
         } else if (event.type === 'error') {
-          this.update(documentId, { status: 'error', error: event.message, marking: [] })
+          this.update(documentId, { status: 'error', error: event.message, reply: event.reply, marking: [] })
           return
         }
       }

@@ -224,4 +224,18 @@ describe('EvaluationRunner', () => {
 
     expect(run('asha')).toBeUndefined()
   })
+
+  it('shows how much the model has written, and what it answered when that was of no use', async () => {
+    const { streams, run, start } = setup()
+    start('asha')
+    await flush()
+
+    streams.stream('asha').push({ type: 'progress', step: 'split', attempt: 2, characters: 1234 })
+    await flush()
+    expect(run('asha')).toMatchObject({ step: 'split', received: 1234, attempt: 2 })
+
+    streams.stream('asha').push({ type: 'error', message: 'No answers found.', reply: '{"answers": []}' })
+    await flush()
+    expect(run('asha')).toMatchObject({ status: 'error', error: 'No answers found.', reply: '{"answers": []}' })
+  })
 })

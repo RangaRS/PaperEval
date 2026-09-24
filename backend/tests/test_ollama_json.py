@@ -6,7 +6,7 @@ from typing import Any
 import httpx
 import pytest
 
-from app.ollama import OllamaClient, OllamaError
+from app.ollama import ChatText, OllamaClient, OllamaError, UnusableReplyError
 
 from .helpers import API_KEY, FakeOllama
 
@@ -49,12 +49,42 @@ def test_unescaped_latex_in_the_answer_survives() -> None:
     assert ask(fake)["feedback"] == r"Uses $\frac{1}{2}$ and $\theta$"
 
 
-def test_an_answer_that_is_not_json_is_an_error() -> None:
+def test_an_answer_that_is_not_json_is_an_error_that_keeps_the_answer() -> None:
     fake = FakeOllama()
     fake.json_reply = lambda payload: "Sorry, I cannot help with that."
 
-    with pytest.raises(OllamaError, match="did not answer in the expected format"):
+    with pytest.raises(UnusableReplyError, match="did not answer in the expected format") as error:
         ask(fake)
+    assert error.value.reply == "Sorry, I cannot help with that."
+
+
+def test_an_empty_answer_says_so() -> None:
+    fake = FakeOllama()
+    fake.json_reply = lambda payload: ""
+
+    with pytest.raises(UnusableReplyError, match="returned an empty answer"):
+        ask(fake)
+
+
+def test_the_answer_is_passed_on_as_it_arrives() -> None:
+    fake = FakeOllama()
+    fake.json_reply = lambda payload: {"feedback": "A long explanation of the marks.", "marks": 2}
+    pieces: list[str] = []
+
+    async def run() -> ChatText:
+        client = OllamaClient("https://ollama.com", api_key=API_KEY, transport=httpx.MockTransport(fake.handler))
+        try:
+            return await client.chat_text(model="m", system="S", prompt="P", on_text=pieces.append)
+        finally:
+            await client.aclose()
+
+    answer = asyncio.run(run())
+
+    assert len(pieces) > 1
+    assert "".join(pieces) == answer.text == '{"feedback": "A long explanation of the marks.", "marks": 2}'
+    assert answer.done_reason == "stop"
+    # Without a schema, no format is asked for.
+    assert "format" not in fake.json_payloads()[0]
 
 
 def test_an_answer_cut_off_by_the_token_limit_says_so() -> None:
@@ -62,7 +92,7 @@ def test_an_answer_cut_off_by_the_token_limit_says_so() -> None:
     fake.json_reply = lambda payload: '{"marks": '
     fake.json_done_reason = "length"
 
-    with pytest.raises(OllamaError, match="ran out of room"):
+    with pytest.raises(OllamaError, match="reached its output limit"):
         ask(fake)
 
 
