@@ -79,3 +79,31 @@ def test_an_env_file_saved_with_a_byte_order_mark_is_read(tmp_path: Path) -> Non
 
 def test_a_missing_env_file_is_fine(tmp_path: Path) -> None:
     assert Settings.from_env(env_file=tmp_path / "missing.env").ollama_base_url == "http://localhost:11434"
+
+
+def test_the_backend_listens_on_port_8710_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("BACKEND_HOST", raising=False)
+    monkeypatch.delenv("BACKEND_PORT", raising=False)
+
+    settings = Settings.from_env(env_file=None)
+
+    assert (settings.host, settings.port) == ("127.0.0.1", 8710)
+
+
+def test_the_address_can_be_changed_in_the_env_file(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("BACKEND_HOST", raising=False)
+    monkeypatch.delenv("BACKEND_PORT", raising=False)
+    env_file = tmp_path / ".env"
+    env_file.write_text("BACKEND_HOST=0.0.0.0\nBACKEND_PORT=9123\n")
+
+    settings = Settings.from_env(env_file=env_file)
+
+    assert (settings.host, settings.port) == ("0.0.0.0", 9123)
+
+
+@pytest.mark.parametrize("port", ["0", "70000", "http"])
+def test_ports_are_validated(port: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BACKEND_PORT", port)
+
+    with pytest.raises(ValueError, match="BACKEND_PORT must be"):
+        Settings.from_env(env_file=None)

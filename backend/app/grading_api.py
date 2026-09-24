@@ -210,7 +210,7 @@ def download_results(exam_id: str, exams: ExamStoreDep, evaluations: EvaluationS
         )
     # The byte order mark makes Excel read the file as UTF-8.
     return Response(
-        ("﻿" + buffer.getvalue()).encode("utf-8"),
+        ("\ufeff" + buffer.getvalue()).encode("utf-8"),
         media_type="text/csv; charset=utf-8",
         headers={"Content-Disposition": _attachment(f"{exam.name} results.csv")},
     )

@@ -74,12 +74,13 @@ The browser never talks to Ollama directly, so your API key stays on the server.
    source .venv/bin/activate          # Windows: .venv\Scripts\activate
    pip install -r requirements.txt
    cp .env.example .env               # then put your key in .env: OLLAMA_API_KEY=...
-   uvicorn app.main:app --reload
+   python -m app
    ```
 
-   The backend reads `backend/.env` when it starts. It runs on <http://localhost:8000>, and its API docs are at
-   <http://localhost:8000/docs>. When it starts, it prints which Ollama it uses: `Using Ollama Cloud at
-   https://ollama.com (with an API key)` means your key was found.
+   The backend reads `backend/.env` when it starts. It runs on <http://localhost:8710>, its API docs are at
+   <http://localhost:8710/docs>, and it restarts by itself when its code changes, for example after a `git pull`.
+   When it starts, it prints which Ollama it uses: `Using Ollama Cloud at https://ollama.com (with an API key)`
+   means your key was found. (`uvicorn app.main:app --reload --port 8710` works too.)
 
 3. **Start the frontend** in a second terminal:
 
@@ -92,8 +93,20 @@ The browser never talks to Ollama directly, so your API key stays on the server.
    `npm ci` installs exactly the versions listed in `package-lock.json` and never changes that file, so later
    `git pull`s aren't blocked by local changes to it.
 
-4. Open <http://localhost:5173>, choose a vision model at the top (for example `qwen3-vl:235b`), upload a file,
+4. Open <http://localhost:5710>, choose a vision model at the top (for example `qwen3-vl:235b`), upload a file,
    and press **Extract** on a page. To mark scripts, see [Marking answer scripts](#marking-answer-scripts).
+
+### Ports
+
+The backend listens on port **8710** and the frontend's dev server on port **5710**, which forwards `/api` requests
+to the backend. If another program already uses one of them, choose others in `backend/.env` and restart both:
+
+```
+BACKEND_PORT=8720
+FRONTEND_PORT=5720
+```
+
+The frontend's dev server reads `backend/.env` too, so it always knows where the backend is.
 
 ### Two ways to use cloud models
 
@@ -202,10 +215,11 @@ Build the frontend once. When `frontend/dist` exists, the backend serves the app
 
 ```bash
 cd frontend && npm run build
-cd ../backend && uvicorn app.main:app
+cd ../backend && python -m app --no-reload
 ```
 
-Then open <http://localhost:8000>. Add `--host 0.0.0.0` to reach it from other machines.
+Then open <http://localhost:8710>. To reach it from other machines, add `--host 0.0.0.0` (or set
+`BACKEND_HOST=0.0.0.0`).
 
 ## Configuration
 
@@ -214,6 +228,9 @@ changing them.
 
 | Variable | Default | Description |
 |---|---|---|
+| `BACKEND_PORT` | `8710` | Port the backend listens on (`python -m app`). |
+| `FRONTEND_PORT` | `5710` | Port of the frontend's dev server (`npm run dev`). |
+| `BACKEND_HOST` | `127.0.0.1` | Address the backend listens on. `0.0.0.0` makes it reachable from other machines. |
 | `OLLAMA_API_KEY` | | API key for Ollama Cloud, sent as a Bearer token. |
 | `OLLAMA_BASE_URL` | `https://ollama.com` if a key is set, otherwise `http://localhost:11434` | The Ollama server to use. |
 | `OLLAMA_MODEL` | | Model to use when none is chosen in the UI. |
@@ -296,14 +313,15 @@ npm run typecheck
 npm run lint
 ```
 
-In development, Vite sends `/api` requests to `http://localhost:8000`. To use another address, set
-`BACKEND_URL` when you run `npm run dev`.
+In development, Vite sends `/api` requests to the backend at the port set in `backend/.env` (8710 by default). To
+use another address, set `BACKEND_URL` when you run `npm run dev`.
 
 ## Project layout
 
 ```
 backend/
   app/
+    __main__.py   `python -m app`: starts the backend on the configured port
     main.py       app factory, serves the frontend build
     api.py        HTTP routes
     pages.py      splitting PDFs and images into page images

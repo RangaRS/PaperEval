@@ -16,6 +16,11 @@ ENV_FILE = BACKEND_DIR / ".env"
 LOCAL_OLLAMA_URL = "http://localhost:11434"
 OLLAMA_CLOUD_URL = "https://ollama.com"
 
+# Where the backend listens by default. The frontend's dev server reads the same
+# setting from backend/.env to know where to send /api requests.
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 8710
+
 
 def _read_env(env_file: Path | None) -> dict[str, str]:
     """Values from ``env_file``, if it exists, overridden by real environment variables."""
@@ -53,6 +58,13 @@ def _env_float(env: Mapping[str, str], name: str, default: float) -> float:
         raise ValueError(f"Environment variable {name} must be a number, got {raw!r}") from exc
 
 
+def _env_port(env: Mapping[str, str], name: str, default: int) -> int:
+    port = _env_int(env, name, default)
+    if not 1 <= port <= 65535:
+        raise ValueError(f"Environment variable {name} must be a port number from 1 to 65535, got {port}")
+    return port
+
+
 def _normalize_url(url: str) -> str:
     url = url.strip().rstrip("/")
     if "://" not in url:
@@ -68,6 +80,10 @@ def is_ollama_cloud_url(url: str) -> bool:
 
 @dataclass(frozen=True)
 class Settings:
+    # Where the backend listens when started with `python -m app`.
+    host: str = DEFAULT_HOST
+    port: int = DEFAULT_PORT
+
     # Ollama server. Use https://ollama.com (with an API key) to call Ollama Cloud
     # directly, or a local Ollama server (which can also run "-cloud" models once
     # signed in with `ollama signin`).
@@ -109,6 +125,8 @@ class Settings:
         # An API key is only needed to call Ollama Cloud directly, so default to it.
         default_url = OLLAMA_CLOUD_URL if api_key else LOCAL_OLLAMA_URL
         return cls(
+            host=_env_str(env, "BACKEND_HOST", cls.host),
+            port=_env_port(env, "BACKEND_PORT", cls.port),
             ollama_base_url=_normalize_url(_env_str(env, "OLLAMA_BASE_URL", default_url)),
             ollama_api_key=api_key,
             ollama_model=_env_str(env, "OLLAMA_MODEL", ""),

@@ -493,7 +493,7 @@ def test_the_results_can_be_downloaded_as_a_spreadsheet(
     assert response.headers["content-disposition"] == (
         "attachment; filename=\"Unit test 1 results.csv\"; filename*=UTF-8''Unit%20test%201%20results.csv"
     )
-    assert response.content.startswith("﻿".encode())
+    assert response.content.startswith("\ufeff".encode())
     rows = list(csv.reader(io.StringIO(response.content.decode("utf-8-sig"))))
     assert rows == [
         ["Paper", "Student", "Roll number", "Q1 (/2)", "Q2 (/3)", "Q3 (/5)", "Total", "Out of", "Fully marked"],
