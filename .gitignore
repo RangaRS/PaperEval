@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+
+# Uploaded documents and extracted text
+backend/data/
+
+# Secrets such as OLLAMA_API_KEY
+.env
+
+# Frontend
+node_modules/
+frontend/dist/
+
+# Editors and OS files
+.idea/
+.vscode/
+.DS_Store
