@@ -31,6 +31,10 @@ _MAX_CONCURRENT_SHOW_REQUESTS = 8
 class OllamaError(Exception):
     """A failed Ollama request, with a message that can be shown to users."""
 
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
 
 @dataclass(frozen=True)
 class ModelInfo:
@@ -213,20 +217,21 @@ class OllamaClient:
                 signin_url = _json_field(response, "signin_url")
                 if signin_url:
                     hint += f" Or open {signin_url}"
-            return OllamaError(f"Ollama refused the request (HTTP {status}: {detail}). {hint}")
+            return OllamaError(f"Ollama refused the request (HTTP {status}: {detail}). {hint}", status_code=status)
         if status == 404 and model:
             hint = (
                 "Check the model's exact name on ollama.com."
                 if self.is_cloud
                 else f"Pull it with `ollama pull {model}`."
             )
-            return OllamaError(f"Model '{model}' was not found (HTTP 404: {detail}). {hint}")
+            return OllamaError(f"Model '{model}' was not found (HTTP 404: {detail}). {hint}", status_code=status)
         if status == 429:
             return OllamaError(
                 f"Ollama rate limit reached (HTTP 429: {detail}). Wait a moment and try again, "
-                "or check your Ollama Cloud usage limits."
+                "or check your Ollama Cloud usage limits.",
+                status_code=status,
             )
-        return OllamaError(f"Ollama returned an error (HTTP {status}: {detail}).")
+        return OllamaError(f"Ollama returned an error (HTTP {status}: {detail}).", status_code=status)
 
 
 def _model_name(entry: dict[str, Any]) -> str:

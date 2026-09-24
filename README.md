@@ -102,6 +102,10 @@ that ollama.com shows (for example `qwen3-vl:235b` rather than `qwen3-vl:235b-cl
 suffix for you, so either name works. A model you choose is always tried, even if the server's information says it
 cannot read images.
 
+For example, Gemma 4 on Ollama Cloud is `gemma4:31b-cloud` (`gemma4:31b` on the API). Names such as `gemma4`,
+`gemma4:latest` or `gemma4:cloud` don't exist there. When a model isn't found, the error suggests similar names
+that the server does offer.
+
 ## Updating
 
 ```bash

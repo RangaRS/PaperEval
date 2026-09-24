@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import base64
 import io
-import json
 from dataclasses import replace
 from typing import Any
 
@@ -140,7 +139,7 @@ def test_ocr_sends_the_page_image_to_the_model(
     assert payload["model"] == "llava:7b"
     assert payload["stream"] is True
     assert payload["options"] == {"temperature": 0}
-    assert "think" not in payload
+    assert payload["think"] is False
     (message,) = payload["messages"]
     assert message["role"] == "user"
     assert message["content"] == "Read this page."
@@ -151,10 +150,11 @@ def test_ocr_sends_the_page_image_to_the_model(
     assert image.size == (618, 800)
 
 
-def test_ocr_turns_off_thinking_for_models_that_think(
-    client: TestClient, fake_ollama: FakeOllama, document: dict[str, Any]
+@pytest.mark.parametrize("model", ["qwen3-vl:235b", "llava:7b"])
+def test_ocr_asks_every_model_not_to_think(
+    client: TestClient, fake_ollama: FakeOllama, document: dict[str, Any], model: str
 ) -> None:
-    run_ocr(client, document, model="qwen3-vl:235b")
+    run_ocr(client, document, model=model)
 
     assert fake_ollama.chat_payload()["think"] is False
 
@@ -217,7 +217,6 @@ def test_ollama_cloud_gets_model_names_without_the_cloud_suffix(
     events = run_ocr(client, document, model=chosen)
 
     assert fake_ollama.chat_payload()["model"] == sent
-    assert json.loads(fake_ollama.requests_to("/api/show")[-1].content)["model"] == sent
     # The result keeps the name that was chosen, as shown in the model list.
     assert events[-1]["result"]["model"] == chosen
 
@@ -286,6 +285,48 @@ def test_ocr_explains_local_ollama_errors(
         events = run_ocr(client, document, model="llava:13b")
 
     assert expected in events[-1]["message"]
+
+
+@pytest.mark.parametrize(
+    ("requested", "suggestion"),
+    [
+        ("gemma4", "Did you mean gemma4:31b?"),
+        ("gemma4:cloud", "Did you mean gemma4:31b?"),
+        ("qwen3", "Models with a similar name: qwen3-vl:235b, qwen3-vl:8b."),
+    ],
+)
+def test_a_missing_model_suggests_similar_names(
+    client: TestClient,
+    fake_ollama: FakeOllama,
+    document: dict[str, Any],
+    requested: str,
+    suggestion: str,
+) -> None:
+    fake_ollama.models.update({"gemma4:31b": ["completion", "vision", "thinking"], "qwen3-vl:8b": ["vision"]})
+    fake_ollama.chat_status = 404
+    fake_ollama.chat_error = {"error": f"model '{requested}' not found"}
+
+    events = run_ocr(client, document, model=requested)
+
+    assert events[-1]["type"] == "error"
+    assert events[-1]["message"].endswith(suggestion)
+
+
+def test_reasoning_without_an_answer_is_an_error(
+    client: TestClient, fake_ollama: FakeOllama, document: dict[str, Any]
+) -> None:
+    fake_ollama.chat_chunks = [
+        chat_chunk("", thinking="The page shows a formula..."),
+        chat_chunk("", done=True, done_reason="length"),
+    ]
+
+    events = run_ocr(client, document, model="qwen3-vl:235b")
+
+    assert events[-1] == {
+        "type": "error",
+        "message": "qwen3-vl:235b only returned its reasoning, without any text. Try again, or choose another model.",
+    }
+    assert client.get(f"/api/documents/{document['id']}").json()["pages"][0]["ocr"] is None
 
 
 def test_errors_in_the_middle_of_the_stream_are_reported_and_not_saved(

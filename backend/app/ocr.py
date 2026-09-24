@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import io
+import logging
 import time
 from collections.abc import AsyncIterator
 from contextlib import aclosing
@@ -16,6 +17,8 @@ from PIL import Image
 
 from .ollama import OllamaClient, OllamaError
 from .storage import DocumentNotFoundError, DocumentStore, OcrResult, utc_now
+
+logger = logging.getLogger("uvicorn.error")
 
 
 @dataclass(frozen=True)
@@ -107,15 +110,13 @@ async def ocr_events(
         yield {"type": "error", "message": "The page image could not be read. Was the document deleted?"}
         return
 
-    # A model the server says cannot read images is still tried: it was chosen on
-    # purpose, and that information is not always right for cloud models.
-    capabilities = await ollama.capabilities(model)
-
     options: dict[str, Any] = {"temperature": 0}
     if num_ctx > 0:
         options["num_ctx"] = num_ctx
-    # Reasoning would only slow down a transcription, so turn it off where possible.
-    think = False if capabilities and "thinking" in capabilities else None
+    # Thinking models such as Gemma 4 reason before answering unless told not to,
+    # which only slows a transcription down and can use up the whole answer.
+    # Models that cannot think ignore this.
+    think = False
 
     parts: list[str] = []
     final_chunk: dict[str, Any] | None = None
@@ -136,11 +137,21 @@ async def ocr_events(
                     final_chunk = chunk
                     break
     except OllamaError as exc:
-        yield {"type": "error", "message": str(exc)}
+        message = str(exc)
+        if exc.status_code == 404:
+            message += await _similar_models(ollama, model)
+        logger.warning("Extracting text with %s failed: %s", model, message)
+        yield {"type": "error", "message": message}
         return
 
     if final_chunk is None:
         yield {"type": "error", "message": "Ollama ended the response before it was complete."}
+        return
+
+    if thinking and not "".join(parts).strip():
+        message = f"{model} only returned its reasoning, without any text. Try again, or choose another model."
+        logger.warning("Extracting text with %s failed: %s", model, message)
+        yield {"type": "error", "message": message}
         return
 
     result = OcrResult(
@@ -159,6 +170,23 @@ async def ocr_events(
         yield {"type": "error", "message": "The document was deleted before the text could be saved."}
         return
     yield {"type": "done", "result": result.model_dump(mode="json")}
+
+
+async def _similar_models(ollama: OllamaClient, model: str) -> str:
+    """Suggest models the server offers with a name like ``model``, e.g. gemma4:31b for gemma4."""
+    base = model.split(":")[0].removesuffix("-cloud").lower()
+    if not base:
+        return ""
+    try:
+        names = [info.name for info in await ollama.list_models()]
+    except OllamaError:
+        return ""
+    similar = [name for name in names if name.lower().split(":")[0].startswith(base)][:6]
+    if not similar:
+        return ""
+    if len(similar) == 1:
+        return f" Did you mean {similar[0]}?"
+    return f" Models with a similar name: {', '.join(similar)}."
 
 
 def _int_or_none(value: Any) -> int | None:
