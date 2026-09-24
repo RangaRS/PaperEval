@@ -134,7 +134,7 @@ def test_config_describes_prompts_and_limits(client: TestClient) -> None:
     assert config["max_upload_mb"] == 1
     assert config["max_pages"] == 5
     assert ".pdf" in config["accepted_extensions"]
-    assert [preset["id"] for preset in config["prompt_presets"]] == ["text", "markdown"]
+    assert [preset["id"] for preset in config["prompt_presets"]] == ["text", "markdown", "math"]
     assert config["default_prompt"] == config["prompt_presets"][0]["prompt"]
 
 

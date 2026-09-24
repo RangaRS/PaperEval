@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import io
+import json
 from dataclasses import replace
 from typing import Any
 
@@ -197,14 +198,38 @@ def test_ocr_of_an_unknown_page_is_not_found(client: TestClient, document: dict[
     assert response.status_code == 404
 
 
-def test_models_that_cannot_read_images_are_refused(
+def test_a_chosen_model_is_tried_even_if_the_server_says_it_cannot_read_images(
     client: TestClient, fake_ollama: FakeOllama, document: dict[str, Any]
 ) -> None:
     events = run_ocr(client, document, model="gpt-oss:120b")
 
-    assert [event["type"] for event in events] == ["start", "error"]
-    assert "cannot read images" in events[-1]["message"]
-    assert fake_ollama.requests_to("/api/chat") == []
+    assert events[-1]["type"] == "done"
+    assert fake_ollama.chat_payload()["model"] == "gpt-oss:120b"
+
+
+@pytest.mark.parametrize(
+    ("chosen", "sent"),
+    [("qwen3-vl:235b-cloud", "qwen3-vl:235b"), ("glm-4.6:cloud", "glm-4.6"), ("llava:7b", "llava:7b")],
+)
+def test_ollama_cloud_gets_model_names_without_the_cloud_suffix(
+    client: TestClient, fake_ollama: FakeOllama, document: dict[str, Any], chosen: str, sent: str
+) -> None:
+    events = run_ocr(client, document, model=chosen)
+
+    assert fake_ollama.chat_payload()["model"] == sent
+    assert json.loads(fake_ollama.requests_to("/api/show")[-1].content)["model"] == sent
+    # The result keeps the name that was chosen, as shown in the model list.
+    assert events[-1]["result"]["model"] == chosen
+
+
+def test_a_local_ollama_gets_cloud_model_names_unchanged(settings: Settings, fake_ollama: FakeOllama) -> None:
+    fake_ollama.models = {"qwen3-vl:235b-cloud": ["completion", "vision"]}
+
+    with make_client(settings, fake_ollama, base_url="http://localhost:11434", api_key="") as client:
+        document = upload(client, make_pdf(page_count=1)).json()
+        run_ocr(client, document, model="qwen3-vl:235b-cloud")
+
+    assert fake_ollama.chat_payload()["model"] == "qwen3-vl:235b-cloud"
 
 
 def test_models_with_unknown_capabilities_are_tried(

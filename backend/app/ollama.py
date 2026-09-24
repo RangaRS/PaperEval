@@ -86,8 +86,23 @@ class OllamaClient:
         models = [self._model_info(entry, caps) for entry, caps in zip(entries, capabilities, strict=True)]
         return sorted(models, key=lambda model: model.name.lower())
 
+    def api_model_name(self, model: str) -> str:
+        """The name to send to the server for ``model``.
+
+        A local Ollama runs cloud models under names like ``gemma3:27b-cloud``,
+        which is also how ollama.com shows them. Ollama Cloud's own API knows
+        them without the ``-cloud`` suffix, so drop it when calling it directly.
+        """
+        model = model.strip()
+        if self.is_cloud:
+            for suffix in ("-cloud", ":cloud"):
+                if model.endswith(suffix) and len(model) > len(suffix):
+                    return model.removesuffix(suffix)
+        return model
+
     async def capabilities(self, model: str) -> frozenset[str] | None:
         """What a model supports (e.g. "vision", "thinking"), or None if the server does not say."""
+        model = self.api_model_name(model)
         cached = self._capabilities.get(model)
         if cached and time.monotonic() < cached[0]:
             return cached[1]
@@ -114,6 +129,7 @@ class OllamaClient:
         think: bool | None = None,
     ) -> AsyncIterator[dict[str, Any]]:
         """Send one image with a prompt and yield the streamed response chunks."""
+        model = self.api_model_name(model)
         payload: dict[str, Any] = {
             "model": model,
             "messages": [{"role": "user", "content": prompt, "images": [image_base64]}],
@@ -200,7 +216,7 @@ class OllamaClient:
             return OllamaError(f"Ollama refused the request (HTTP {status}: {detail}). {hint}")
         if status == 404 and model:
             hint = (
-                "Choose one of the models the server lists."
+                "Check the model's exact name on ollama.com."
                 if self.is_cloud
                 else f"Pull it with `ollama pull {model}`."
             )

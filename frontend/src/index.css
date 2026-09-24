@@ -814,6 +814,7 @@ code {
 .panel-toolbar {
   flex: none;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   min-height: 48px;
@@ -948,6 +949,86 @@ code {
   font-family: var(--mono);
   font-size: 13px;
   line-height: 1.6;
+}
+
+.result-preview {
+  font-size: 15px;
+  line-height: 1.7;
+  overflow-wrap: anywhere;
+}
+
+.result-preview > :first-child {
+  margin-top: 0;
+}
+
+.result-preview p,
+.result-preview ul,
+.result-preview ol,
+.result-preview table,
+.result-preview blockquote,
+.result-preview pre {
+  margin: 0 0 0.9em;
+}
+
+.result-preview h1,
+.result-preview h2,
+.result-preview h3,
+.result-preview h4 {
+  margin: 1.2em 0 0.5em;
+  line-height: 1.3;
+}
+
+.result-preview h1 {
+  font-size: 1.4em;
+}
+
+.result-preview h2 {
+  font-size: 1.25em;
+}
+
+.result-preview h3,
+.result-preview h4 {
+  font-size: 1.1em;
+}
+
+.result-preview ul,
+.result-preview ol {
+  padding-left: 1.6em;
+}
+
+.result-preview table {
+  border-collapse: collapse;
+}
+
+.result-preview th,
+.result-preview td {
+  padding: 4px 10px;
+  border: 1px solid var(--border-strong);
+}
+
+.result-preview blockquote {
+  padding-left: 12px;
+  border-left: 3px solid var(--border-strong);
+  color: var(--muted);
+}
+
+.result-preview pre {
+  padding: 10px 12px;
+  overflow-x: auto;
+  border-radius: var(--radius);
+  background: var(--surface-2);
+}
+
+.result-preview .katex {
+  font-size: 1.1em;
+}
+
+/* Wide equations scroll sideways instead of spilling out of the panel. */
+.result-preview .katex-display {
+  margin: 0.6em 0;
+  padding: 2px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .caret {
@@ -1123,6 +1204,20 @@ code {
 
 .segmented button:disabled {
   cursor: default;
+}
+
+.segmented-small {
+  margin: 0 4px 0 0;
+  padding: 2px;
+}
+
+.segmented-small button {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding: 0 10px;
+  font-size: 12.5px;
 }
 
 .model-add {

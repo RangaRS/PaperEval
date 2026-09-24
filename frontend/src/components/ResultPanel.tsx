@@ -1,11 +1,30 @@
-import { Brain, Check, CircleAlert, Copy, Download, LoaderCircle, ScanText, Square, TriangleAlert, Type, X } from 'lucide-react'
-import { useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import {
+  Brain,
+  Check,
+  CircleAlert,
+  Copy,
+  Download,
+  LoaderCircle,
+  ScanText,
+  Sigma,
+  Square,
+  TriangleAlert,
+  Type,
+  X,
+} from 'lucide-react'
+import { lazy, Suspense, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 
 import type { DocumentInfo, Page } from '../api'
 import { isBoolean, useElapsedSeconds, useLocalStorage } from '../hooks'
 import { pageStatus, type OcrJob } from '../ocrQueue'
 import { copyText, downloadText, errorMessage, fileStem, formatDuration, formatElapsed } from '../utils'
 import { StatusBadge } from './StatusBadge'
+
+// Typesetting maths needs KaTeX, so only load it once the preview is shown.
+const MathPreview = lazy(() => import('./MathPreview'))
+
+type View = 'text' | 'preview'
+const isView = (value: unknown): value is View => value === 'text' || value === 'preview'
 
 interface ResultPanelProps {
   document: DocumentInfo
@@ -21,6 +40,7 @@ interface ResultPanelProps {
 /** The text the model read from the page, streamed in as it is written. */
 export function ResultPanel({ document, page, job, model, onExtract, onStop, onDismiss, onError }: ResultPanelProps) {
   const [monospace, setMonospace] = useLocalStorage('papereval.monospace', false, isBoolean)
+  const [view, setView] = useLocalStorage<View>('papereval.view', 'text', isView)
   const [copied, setCopied] = useState(false)
   const body = useRef<HTMLDivElement>(null)
   const stickToBottom = useRef(true)
@@ -59,16 +79,39 @@ export function ResultPanel({ document, page, job, model, onExtract, onStop, onD
         <span className="panel-title">Extracted text</span>
         <StatusBadge status={status} />
         <div className="toolbar-group toolbar-end">
-          <button
-            type="button"
-            className={`icon-btn${monospace ? ' is-active' : ''}`}
-            onClick={() => setMonospace((value) => !value)}
-            title="Monospace font"
-            aria-label="Monospace font"
-            aria-pressed={monospace}
-          >
-            <Type size={16} />
-          </button>
+          <div className="segmented segmented-small" role="group" aria-label="Show the text as">
+            <button
+              type="button"
+              className={view === 'text' ? 'is-active' : undefined}
+              aria-pressed={view === 'text'}
+              onClick={() => setView('text')}
+              title="The text exactly as the model wrote it"
+            >
+              Text
+            </button>
+            <button
+              type="button"
+              className={view === 'preview' ? 'is-active' : undefined}
+              aria-pressed={view === 'preview'}
+              onClick={() => setView('preview')}
+              title="Formatted, with LaTeX maths typeset"
+            >
+              <Sigma size={13} aria-hidden />
+              Preview
+            </button>
+          </div>
+          {view === 'text' && (
+            <button
+              type="button"
+              className={`icon-btn${monospace ? ' is-active' : ''}`}
+              onClick={() => setMonospace((value) => !value)}
+              title="Monospace font"
+              aria-label="Monospace font"
+              aria-pressed={monospace}
+            >
+              <Type size={16} />
+            </button>
+          )}
           <button type="button" className="icon-btn" onClick={copy} disabled={!text} title="Copy text" aria-label="Copy text">
             {copied ? <Check size={16} /> : <Copy size={16} />}
           </button>
@@ -124,12 +167,18 @@ export function ResultPanel({ document, page, job, model, onExtract, onStop, onD
         {status === 'queued' && <Waiting>Waiting for the pages ahead of this one…</Waiting>}
         {status === 'running' && !job!.text && <Running job={job!} />}
 
-        {text !== null && (text || !streaming) && (
-          <pre className={`result-text${monospace ? ' is-monospace' : ''}`}>
-            {text || <span className="muted">The model found no text on this page.</span>}
-            {status === 'running' && <span className="caret" aria-hidden />}
-          </pre>
-        )}
+        {text !== null &&
+          (text || !streaming) &&
+          (view === 'preview' && text ? (
+            <Suspense fallback={<pre className="result-text">{text}</pre>}>
+              <MathPreview text={text} />
+            </Suspense>
+          ) : (
+            <pre className={`result-text${monospace ? ' is-monospace' : ''}`}>
+              {text || <span className="muted">The model found no text on this page.</span>}
+              {status === 'running' && <span className="caret" aria-hidden />}
+            </pre>
+          ))}
 
         {status === 'idle' && (
           <div className="result-empty">

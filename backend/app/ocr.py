@@ -48,6 +48,18 @@ PROMPT_PRESETS = (
             "Output only the Markdown, without wrapping it in a code block."
         ),
     ),
+    PromptPreset(
+        id="math",
+        label="Maths (LaTeX)",
+        prompt=(
+            "Transcribe all of the text in this image exactly as it is written, in the original reading order.\n"
+            "- Write every mathematical expression in LaTeX: use $...$ for maths within a line and $$...$$ for "
+            "maths on a line of its own.\n"
+            "- Keep the original line breaks, numbering and question labels.\n"
+            "- Do not solve, correct, simplify, summarize or explain anything, and do not add commentary.\n"
+            "Output only the transcription."
+        ),
+    ),
 )
 DEFAULT_PROMPT = PROMPT_PRESETS[0].prompt
 
@@ -95,13 +107,9 @@ async def ocr_events(
         yield {"type": "error", "message": "The page image could not be read. Was the document deleted?"}
         return
 
+    # A model the server says cannot read images is still tried: it was chosen on
+    # purpose, and that information is not always right for cloud models.
     capabilities = await ollama.capabilities(model)
-    if capabilities is not None and "completion" in capabilities and "vision" not in capabilities:
-        yield {
-            "type": "error",
-            "message": f"Model '{model}' cannot read images. Choose a vision model.",
-        }
-        return
 
     options: dict[str, Any] = {"temperature": 0}
     if num_ctx > 0:

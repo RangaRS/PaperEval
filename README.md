@@ -17,12 +17,15 @@ Each page is shown next to its extracted text, so you can check the OCR against 
 - **Side-by-side comparison.** The page image is on the left (fit width or page, zoom with the buttons or
   Ctrl/⌘ + scroll, drag to pan). The text is on the right (copy, download as `.txt`, monospace toggle).
   Drag the divider between them to resize.
+- **Maths preview.** Switch the text panel from **Text** to **Preview** to see the answer formatted, with its LaTeX
+  maths typeset (`$...$`, `$$...$$`, `\(...\)` and `\[...\]`). Copy and download still give the LaTeX source.
 - **Ollama Cloud or local.** The model list comes from the server, and you can add any other model by name.
   Models that can't read images are hidden, and thinking models have their reasoning turned off so they answer
   straight away.
 - **Results are kept.** Pages and extracted text are saved on disk, so they are still there after a restart.
   You can download all of a document's text as one file.
-- **Choose the prompt.** Use the *Plain text* or *Markdown* preset, or write your own in Settings.
+- **Choose the prompt.** Use the *Plain text*, *Markdown* or *Maths (LaTeX)* preset, or write your own in Settings.
+  *Maths (LaTeX)* asks the model to write every formula in LaTeX, which suits the preview.
 
 ## How it works
 
@@ -91,8 +94,10 @@ The model list shows the vision models your Ollama server reports. To use a mode
 - **With a local Ollama:** `ollama pull <model>` (for example `ollama pull qwen3-vl:235b-cloud`) makes it appear in
   the list by itself.
 
-If the server says an added model cannot read images, extracting with it stops with an error, rather than letting
-the model guess at the page.
+With an API key the app talks to ollama.com directly, where cloud models are named without the `-cloud` suffix
+that ollama.com shows (for example `qwen3-vl:235b` rather than `qwen3-vl:235b-cloud`). The app removes that
+suffix for you, so either name works. A model you choose is always tried, even if the server's information says it
+cannot read images.
 
 ## Running as a single server
 
