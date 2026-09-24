@@ -16,6 +16,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .config import Settings
+from .evaluations import EvaluationStore
+from .exams import ExamStore
 from .ocr import DEFAULT_PROMPT, PROMPT_PRESETS, ocr_events
 from .ollama import OllamaClient, OllamaError
 from .pages import TooManyPagesError, UnsupportedFileError, detect_kind, iter_pages
@@ -38,9 +40,19 @@ def get_ollama(request: Request) -> OllamaClient:
     return request.app.state.ollama
 
 
+def get_exam_store(request: Request) -> ExamStore:
+    return request.app.state.exam_store
+
+
+def get_evaluation_store(request: Request) -> EvaluationStore:
+    return request.app.state.evaluation_store
+
+
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 StoreDep = Annotated[DocumentStore, Depends(get_store)]
 OllamaDep = Annotated[OllamaClient, Depends(get_ollama)]
+ExamStoreDep = Annotated[ExamStore, Depends(get_exam_store)]
+EvaluationStoreDep = Annotated[EvaluationStore, Depends(get_evaluation_store)]
 
 
 class PageOut(BaseModel):
@@ -171,27 +183,29 @@ async def upload_document(file: UploadFile, settings: SettingsDep, store: StoreD
 
 @router.get("/documents/{document_id}")
 def get_document(document_id: str, store: StoreDep) -> DocumentOut:
-    return _document_out(_load_document(store, document_id))
+    return _document_out(load_document(store, document_id))
 
 
 @router.delete("/documents/{document_id}", status_code=204)
-def delete_document(document_id: str, store: StoreDep) -> Response:
+def delete_document(document_id: str, store: StoreDep, evaluations: EvaluationStoreDep) -> Response:
+    """Delete a document, with its extracted text and evaluations."""
     try:
         store.delete(document_id)
     except DocumentNotFoundError:
         raise HTTPException(404, "Document not found.") from None
+    evaluations.delete_where(document_id=document_id)
     return Response(status_code=204)
 
 
 @router.get("/documents/{document_id}/pages/{page_number}/image")
 def get_page_image(document_id: str, page_number: int, store: StoreDep) -> FileResponse:
-    page = _load_page(_load_document(store, document_id), page_number)
+    page = _load_page(load_document(store, document_id), page_number)
     return _image_response(store.file_path(document_id, page.image_file))
 
 
 @router.get("/documents/{document_id}/pages/{page_number}/thumbnail")
 def get_page_thumbnail(document_id: str, page_number: int, store: StoreDep) -> FileResponse:
-    page = _load_page(_load_document(store, document_id), page_number)
+    page = _load_page(load_document(store, document_id), page_number)
     return _image_response(store.file_path(document_id, page.thumbnail_file))
 
 
@@ -211,10 +225,8 @@ async def extract_page_text(
     with the page.
     """
     body = body or OcrRequest()
-    page = _load_page(_load_document(store, document_id), page_number)
-    model = body.model.strip() or settings.ollama_model
-    if not model:
-        raise HTTPException(400, "No model selected. Pass a model or set OLLAMA_MODEL.")
+    page = _load_page(load_document(store, document_id), page_number)
+    model = choose_model(body.model, settings)
     events = ocr_events(
         ollama=ollama,
         store=store,
@@ -226,11 +238,31 @@ async def extract_page_text(
         max_image_side=settings.ocr_max_image_side,
         num_ctx=settings.ollama_num_ctx,
     )
+    return ndjson_response(events)
+
+
+def choose_model(requested: str, settings: Settings) -> str:
+    """The model a request asks for, or else the configured default."""
+    model = requested.strip() or settings.ollama_model
+    if not model:
+        raise HTTPException(400, "No model selected. Pass a model or set OLLAMA_MODEL.")
+    return model
+
+
+def ndjson_response(events: AsyncIterator[dict[str, Any]]) -> StreamingResponse:
+    """Stream events as newline-delimited JSON, one event per line, as soon as each is ready."""
     return StreamingResponse(
         _ndjson(events),
         media_type="application/x-ndjson",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+def load_document(store: DocumentStore, document_id: str) -> StoredDocument:
+    try:
+        return store.get(document_id)
+    except DocumentNotFoundError:
+        raise HTTPException(404, "Document not found.") from None
 
 
 def _ingest(data: bytes, filename: str, settings: Settings, store: DocumentStore) -> StoredDocument:
@@ -242,13 +274,6 @@ def _ingest(data: bytes, filename: str, settings: Settings, store: DocumentStore
 async def _ndjson(events: AsyncIterator[dict[str, Any]]) -> AsyncIterator[str]:
     async for event in events:
         yield json.dumps(event, ensure_ascii=False) + "\n"
-
-
-def _load_document(store: DocumentStore, document_id: str) -> StoredDocument:
-    try:
-        return store.get(document_id)
-    except DocumentNotFoundError:
-        raise HTTPException(404, "Document not found.") from None
 
 
 def _load_page(document: StoredDocument, page_number: int) -> StoredPage:

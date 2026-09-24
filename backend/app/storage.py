@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 META_FILE = "meta.json"
 THUMBNAIL_SIZE = (240, 320)
-_DOCUMENT_ID = re.compile(r"^[0-9a-f]{32}$")
+ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _STAGING_PREFIX = ".staging-"
 _DELETING_PREFIX = ".deleting-"
 
@@ -100,7 +100,7 @@ class DocumentStore:
                 created_at=utc_now(),
                 pages=stored_pages,
             )
-            _write_json_atomic(staging / META_FILE, document)
+            write_json_atomic(staging / META_FILE, document)
             staging.rename(self.root / document_id)
         except BaseException:
             shutil.rmtree(staging, ignore_errors=True)
@@ -113,7 +113,7 @@ class DocumentStore:
             return []
         documents = []
         for path in self.root.iterdir():
-            if not _DOCUMENT_ID.match(path.name):
+            if not ID_PATTERN.match(path.name):
                 continue
             try:
                 documents.append(self._read(path))
@@ -153,7 +153,7 @@ class DocumentStore:
             if page is None:
                 raise DocumentNotFoundError(f"{document_id} page {page_number}")
             page.ocr = result
-            _write_json_atomic(directory / META_FILE, document)
+            write_json_atomic(directory / META_FILE, document)
         return page
 
     def remove_incomplete(self) -> None:
@@ -165,7 +165,7 @@ class DocumentStore:
                 shutil.rmtree(path, ignore_errors=True)
 
     def _document_dir(self, document_id: str) -> Path:
-        if not _DOCUMENT_ID.match(document_id):
+        if not ID_PATTERN.match(document_id):
             raise DocumentNotFoundError(document_id)
         return self.root / document_id
 
@@ -194,7 +194,7 @@ class DocumentStore:
         )
 
 
-def _write_json_atomic(path: Path, model: BaseModel) -> None:
+def write_json_atomic(path: Path, model: BaseModel) -> None:
     temporary = path.with_name(f".{path.name}.tmp")
     temporary.write_text(model.model_dump_json(indent=2), encoding="utf-8")
     os.replace(temporary, path)

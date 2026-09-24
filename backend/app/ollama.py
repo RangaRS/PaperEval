@@ -18,6 +18,7 @@ from typing import Any
 import httpx
 
 from .config import is_ollama_cloud_url
+from .llm_json import loads_llm_json
 
 API_KEYS_URL = "https://ollama.com/settings/keys"
 
@@ -149,21 +150,69 @@ class OllamaClient:
                     await response.aread()
                     raise self._response_error(response, model=model)
                 async for line in response.aiter_lines():
-                    if not line.strip():
-                        continue
-                    try:
-                        chunk = json.loads(line)
-                    except json.JSONDecodeError:
-                        raise OllamaError("Ollama sent a response that could not be read.") from None
-                    if not isinstance(chunk, dict):
-                        continue
-                    if chunk.get("error"):
-                        raise OllamaError(f"Ollama error: {chunk['error']}")
-                    yield chunk
+                    chunk = _parse_chunk(line)
+                    if chunk is not None:
+                        yield chunk
         except httpx.TimeoutException as exc:
             raise OllamaError(f"Ollama did not respond within {self.timeout:g} seconds.") from exc
         except httpx.HTTPError as exc:
             raise OllamaError(self._connection_error_message(exc)) from exc
+
+    async def chat_json(
+        self,
+        *,
+        model: str,
+        system: str,
+        prompt: str,
+        schema: dict[str, Any],
+        num_ctx: int = 0,
+    ) -> Any:
+        """Ask for an answer in JSON shaped like ``schema``, and return it parsed.
+
+        The answer is streamed, even though only the whole of it is used: long
+        answers then keep the connection busy instead of leaving it idle for
+        minutes, which proxies and gateways may cut off.
+        """
+        options: dict[str, Any] = {"temperature": 0}
+        if num_ctx > 0:
+            options["num_ctx"] = num_ctx
+        payload = {
+            "model": self.api_model_name(model),
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": prompt}],
+            "stream": True,
+            "format": schema,
+            "think": False,
+            "options": options,
+        }
+        parts: list[str] = []
+        done_reason = None
+        try:
+            async with self._http.stream("POST", "/api/chat", json=payload) as response:
+                if response.status_code != 200:
+                    await response.aread()
+                    raise self._response_error(response, model=model)
+                async for line in response.aiter_lines():
+                    chunk = _parse_chunk(line)
+                    if chunk is None:
+                        continue
+                    message = chunk.get("message") if isinstance(chunk.get("message"), dict) else {}
+                    if isinstance(message.get("content"), str):
+                        parts.append(message["content"])
+                    if chunk.get("done"):
+                        done_reason = chunk.get("done_reason")
+                        break
+        except httpx.TimeoutException as exc:
+            raise OllamaError(f"Ollama did not respond within {self.timeout:g} seconds.") from exc
+        except httpx.HTTPError as exc:
+            raise OllamaError(self._connection_error_message(exc)) from exc
+        try:
+            return loads_llm_json("".join(parts))
+        except ValueError:
+            if done_reason == "length":
+                raise OllamaError(f"{model} ran out of room before finishing its answer.") from None
+            raise OllamaError(
+                f"{model} did not answer in the expected format. Try again or use another model."
+            ) from None
 
     async def _request_json(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
         try:
@@ -236,6 +285,21 @@ class OllamaClient:
                 status_code=status,
             )
         return OllamaError(f"Ollama returned an error (HTTP {status}: {detail}).", status_code=status)
+
+
+def _parse_chunk(line: str) -> dict[str, Any] | None:
+    """One line of a streamed chat response, or None for a line without a chunk."""
+    if not line.strip():
+        return None
+    try:
+        chunk = json.loads(line)
+    except json.JSONDecodeError:
+        raise OllamaError("Ollama sent a response that could not be read.") from None
+    if not isinstance(chunk, dict):
+        return None
+    if chunk.get("error"):
+        raise OllamaError(f"Ollama error: {chunk['error']}")
+    return chunk
 
 
 def _model_name(entry: dict[str, Any]) -> str:

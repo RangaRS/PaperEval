@@ -9,8 +9,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from .api import router
+from . import api, grading_api
 from .config import Settings
+from .evaluations import EvaluationStore
+from .exams import ExamStore
 from .ollama import OllamaClient
 from .storage import DocumentStore
 
@@ -37,11 +39,18 @@ def create_app(settings: Settings | None = None, *, ollama: OllamaClient | None 
         finally:
             await ollama.aclose()
 
-    app = FastAPI(title="PaperEval", summary="OCR for PDFs and images with Ollama vision models.", lifespan=lifespan)
+    app = FastAPI(
+        title="PaperEval",
+        summary="Extract the text of answer scripts with Ollama models, and mark them against an answer key.",
+        lifespan=lifespan,
+    )
     app.state.settings = settings
     app.state.store = store
+    app.state.exam_store = ExamStore(settings.data_dir)
+    app.state.evaluation_store = EvaluationStore(settings.data_dir)
     app.state.ollama = ollama
-    app.include_router(router)
+    app.include_router(api.router)
+    app.include_router(grading_api.router)
 
     # Serve the production build of the frontend, if there is one.
     if (settings.frontend_dist / "index.html").is_file():

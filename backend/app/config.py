@@ -90,6 +90,8 @@ class Settings:
     # Page images are downscaled to at most this many pixels on their longest
     # side before being sent to the model. 0 sends them at full resolution.
     ocr_max_image_side: int = 2048
+    # How many answers of a script to mark at the same time.
+    grading_concurrency: int = 3
 
     @property
     def max_upload_bytes(self) -> int:
@@ -118,4 +120,5 @@ class Settings:
             max_upload_mb=_env_int(env, "MAX_UPLOAD_MB", cls.max_upload_mb),
             max_pages=_env_int(env, "MAX_PAGES", cls.max_pages),
             ocr_max_image_side=_env_int(env, "OCR_MAX_IMAGE_SIDE", cls.ocr_max_image_side),
+            grading_concurrency=max(1, _env_int(env, "GRADING_CONCURRENCY", cls.grading_concurrency)),
         )

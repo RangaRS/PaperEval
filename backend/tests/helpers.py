@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -11,6 +12,7 @@ from PIL import Image, ImageDraw
 from app.config import Settings
 from app.main import create_app
 from app.ollama import OllamaClient
+from app.storage import OcrResult, utc_now
 
 CLOUD_URL = "https://ollama.com"
 API_KEY = "test-api-key"
@@ -34,6 +36,11 @@ class FakeOllama:
             chat_chunk("", done=True, done_reason="stop", prompt_eval_count=812, eval_count=3),
         ]
         self.requests: list[httpx.Request] = []
+        # Answers to requests for JSON (those with a "format"): a function of the
+        # request payload returning the reply's content (an object to encode, or
+        # raw text), or a whole response to send instead, such as an error.
+        self.json_reply: Callable[[dict[str, Any]], Any] = lambda payload: {}
+        self.json_done_reason = "stop"
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
@@ -59,7 +66,17 @@ class FakeOllama:
         if path == "/api/chat":
             if self.chat_status != 200:
                 return httpx.Response(self.chat_status, json=self.chat_error)
-            body = "".join(json.dumps(chunk) + "\n" for chunk in self.chat_chunks)
+            payload = json.loads(request.content)
+            chunks = self.chat_chunks
+            if "format" in payload:
+                reply = self.json_reply(payload)
+                if isinstance(reply, httpx.Response):
+                    return reply
+                content = reply if isinstance(reply, str) else json.dumps(reply)
+                # Stream the answer in small pieces, like Ollama does.
+                chunks = [chat_chunk(content[start : start + 10]) for start in range(0, len(content), 10)]
+                chunks.append(chat_chunk("", done=True, done_reason=self.json_done_reason))
+            body = "".join(json.dumps(chunk) + "\n" for chunk in chunks)
             return httpx.Response(200, content=body.encode(), headers={"Content-Type": "application/x-ndjson"})
         return httpx.Response(404, text="404 page not found")
 
@@ -69,6 +86,11 @@ class FakeOllama:
     def chat_payload(self) -> dict[str, Any]:
         (request,) = self.requests_to("/api/chat")
         return json.loads(request.content)
+
+    def json_payloads(self) -> list[dict[str, Any]]:
+        """Payloads of the chat requests for JSON answers, in order."""
+        payloads = [json.loads(request.content) for request in self.requests_to("/api/chat")]
+        return [payload for payload in payloads if "format" in payload]
 
 
 def chat_chunk(content: str, *, done: bool = False, thinking: str | None = None, **extra: Any) -> dict[str, Any]:
@@ -117,3 +139,11 @@ def upload(client: TestClient, data: bytes, filename: str = "scan.pdf") -> Any:
 
 def read_events(response: Any) -> list[dict[str, Any]]:
     return [json.loads(line) for line in response.text.splitlines() if line.strip()]
+
+
+def give_text(client: TestClient, document_id: str, texts: list[str]) -> None:
+    """Save text for a document's first pages, as if it had been extracted."""
+    store = client.app.state.store  # type: ignore[attr-defined]
+    for number, text in enumerate(texts, start=1):
+        result = OcrResult(text=text, model="test", prompt="", created_at=utc_now(), duration_ms=1)
+        store.save_ocr(document_id, number, result)
