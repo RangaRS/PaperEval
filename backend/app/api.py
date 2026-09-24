@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from collections.abc import AsyncIterator
 from contextlib import closing
@@ -10,18 +11,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, Response, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from .config import Settings
 from .evaluations import EvaluationStore
-from .exams import ExamStore
+from .exams import ExamNotFoundError, ExamStore
 from .ocr import DEFAULT_PROMPT, PROMPT_PRESETS, ocr_events
 from .ollama import OllamaClient, OllamaError
 from .pages import TooManyPagesError, UnsupportedFileError, detect_kind, iter_pages
-from .storage import DocumentNotFoundError, DocumentStore, OcrResult, StoredDocument, StoredPage
+from .storage import DocumentNotFoundError, DocumentRole, DocumentStore, OcrResult, StoredDocument, StoredPage
 
 ACCEPTED_EXTENSIONS = [".pdf", ".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".tif", ".tiff"]
 
@@ -70,6 +71,16 @@ class DocumentOut(BaseModel):
     kind: Literal["pdf", "image"]
     created_at: datetime
     pages: list[PageOut]
+    # The evaluator the document belongs to, and whether it is its key file or a student's answer paper.
+    exam_id: str | None
+    role: DocumentRole | None
+
+
+class DocumentAssignment(BaseModel):
+    """Where a document belongs: an evaluator and its role there, or nowhere (both null)."""
+
+    exam_id: str | None = None
+    role: DocumentRole | None = None
 
 
 class ModelOut(BaseModel):
@@ -164,8 +175,21 @@ def list_documents(store: StoreDep) -> list[DocumentOut]:
 
 
 @router.post("/documents", status_code=201)
-async def upload_document(file: UploadFile, settings: SettingsDep, store: StoreDep) -> DocumentOut:
-    """Upload a PDF or image. It is split into one image per page."""
+async def upload_document(
+    file: UploadFile,
+    settings: SettingsDep,
+    store: StoreDep,
+    exams: ExamStoreDep,
+    exam_id: Annotated[str | None, Form()] = None,
+    role: Annotated[DocumentRole | None, Form()] = None,
+) -> DocumentOut:
+    """Upload a PDF or image. It is split into one image per page.
+
+    With ``exam_id`` and ``role``, the document belongs to that evaluator: as
+    its question paper and key (``key``, replacing any earlier one), or as a
+    student's answer paper (``script``).
+    """
+    _check_assignment(exams, DocumentAssignment(exam_id=exam_id, role=role))
     data = await file.read(settings.max_upload_bytes + 1)
     if not data:
         raise HTTPException(400, "The uploaded file is empty.")
@@ -173,11 +197,26 @@ async def upload_document(file: UploadFile, settings: SettingsDep, store: StoreD
         raise HTTPException(413, f"The file is larger than the {settings.max_upload_mb} MB limit.")
     filename = _clean_filename(file.filename)
     try:
-        document = await run_in_threadpool(_ingest, data, filename, settings, store)
+        document = await run_in_threadpool(_ingest, data, filename, settings, store, exam_id, role)
     except UnsupportedFileError as exc:
         raise HTTPException(415, str(exc)) from exc
     except TooManyPagesError as exc:
         raise HTTPException(422, str(exc)) from exc
+    if exam_id and role == "key":
+        _make_key(store, exams, exam_id, document.id)
+    return _document_out(document)
+
+
+@router.patch("/documents/{document_id}")
+def assign_document(document_id: str, body: DocumentAssignment, store: StoreDep, exams: ExamStoreDep) -> DocumentOut:
+    """Make an uploaded document part of an evaluator, or take it out of one."""
+    _check_assignment(exams, body)
+    before = load_document(store, document_id)
+    document = store.assign(document_id, body.exam_id, body.role)
+    if before.role == "key" and before.exam_id and (before.exam_id, "key") != (body.exam_id, body.role):
+        _drop_key(exams, before.exam_id, document_id)
+    if body.exam_id and body.role == "key":
+        _make_key(store, exams, body.exam_id, document_id)
     return _document_out(document)
 
 
@@ -187,13 +226,18 @@ def get_document(document_id: str, store: StoreDep) -> DocumentOut:
 
 
 @router.delete("/documents/{document_id}", status_code=204)
-def delete_document(document_id: str, store: StoreDep, evaluations: EvaluationStoreDep) -> Response:
+def delete_document(
+    document_id: str, store: StoreDep, exams: ExamStoreDep, evaluations: EvaluationStoreDep
+) -> Response:
     """Delete a document, with its extracted text and evaluations."""
+    document = load_document(store, document_id)
     try:
         store.delete(document_id)
     except DocumentNotFoundError:
         raise HTTPException(404, "Document not found.") from None
     evaluations.delete_where(document_id=document_id)
+    if document.role == "key" and document.exam_id:
+        _drop_key(exams, document.exam_id, document_id)
     return Response(status_code=204)
 
 
@@ -265,10 +309,43 @@ def load_document(store: DocumentStore, document_id: str) -> StoredDocument:
         raise HTTPException(404, "Document not found.") from None
 
 
-def _ingest(data: bytes, filename: str, settings: Settings, store: DocumentStore) -> StoredDocument:
+def _ingest(
+    data: bytes,
+    filename: str,
+    settings: Settings,
+    store: DocumentStore,
+    exam_id: str | None = None,
+    role: DocumentRole | None = None,
+) -> StoredDocument:
     kind = detect_kind(data)
     with closing(iter_pages(data, kind, dpi=settings.pdf_dpi, max_pages=settings.max_pages)) as pages:
-        return store.create(filename=filename, kind=kind, pages=pages)
+        return store.create(filename=filename, kind=kind, pages=pages, exam_id=exam_id, role=role)
+
+
+def _check_assignment(exams: ExamStore, assignment: DocumentAssignment) -> None:
+    if (assignment.exam_id is None) != (assignment.role is None):
+        raise HTTPException(422, "Give both the evaluator and the document's role in it, or neither.")
+    if assignment.exam_id is not None:
+        try:
+            exams.get(assignment.exam_id)
+        except ExamNotFoundError:
+            raise HTTPException(404, "Evaluator not found.") from None
+
+
+def _make_key(store: DocumentStore, exams: ExamStore, exam_id: str, document_id: str) -> None:
+    """Make the document the evaluator's key file. An earlier key file is kept, but no longer belongs to it."""
+    earlier = exams.get(exam_id).key_document_id
+    exams.set_key_document(exam_id, document_id)
+    if earlier and earlier != document_id:
+        with contextlib.suppress(DocumentNotFoundError):
+            store.assign(earlier, None, None)
+
+
+def _drop_key(exams: ExamStore, exam_id: str, document_id: str) -> None:
+    """The document is no longer the evaluator's key file."""
+    with contextlib.suppress(ExamNotFoundError):
+        if exams.get(exam_id).key_document_id == document_id:
+            exams.set_key_document(exam_id, None)
 
 
 async def _ndjson(events: AsyncIterator[dict[str, Any]]) -> AsyncIterator[str]:
@@ -309,6 +386,8 @@ def _document_out(document: StoredDocument) -> DocumentOut:
             )
             for page in document.pages
         ],
+        exam_id=document.exam_id,
+        role=document.role,
     )
 
 

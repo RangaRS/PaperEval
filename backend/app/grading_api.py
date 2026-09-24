@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import csv
 import io
 import logging
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from datetime import datetime
 from pathlib import PurePath
 from typing import Any
@@ -38,10 +39,18 @@ from .evaluations import (
     grading_events,
     question_labels,
 )
-from .exams import Exam, ExamNotFoundError, ExamStore, Question
-from .grading import Progress, document_text, format_marks, pages_without_text, progress_events, read_answer_key
+from .exams import PLACEHOLDER_NAMES, Exam, ExamNotFoundError, ExamStore, Question
+from .grading import (
+    AnswerKey,
+    Progress,
+    document_text,
+    format_marks,
+    pages_without_text,
+    progress_events,
+    read_answer_key,
+)
 from .ollama import OllamaClient, OllamaError, UnusableReplyError
-from .storage import StoredDocument
+from .storage import DocumentNotFoundError, StoredDocument
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -62,6 +71,12 @@ class ExamSummary(BaseModel):
     total_marks: float
     # Questions that have no marks yet, which must be set before scripts can be evaluated.
     unmarked_questions: list[str]
+    # The uploaded question paper with its answers and marking scheme.
+    key_document_id: str | None
+
+
+class ReadKeyRequest(BaseModel):
+    model: str = Field(default="", max_length=200)
 
 
 class ExamFromDocumentRequest(BaseModel):
@@ -129,6 +144,7 @@ def list_exams(exams: ExamStoreDep) -> list[ExamSummary]:
             question_count=len(exam.questions),
             total_marks=exam.total_marks,
             unmarked_questions=_unmarked_questions(exam),
+            key_document_id=exam.key_document_id,
         )
         for exam in exams.list_exams()
     ]
@@ -136,8 +152,8 @@ def list_exams(exams: ExamStoreDep) -> list[ExamSummary]:
 
 @router.post("/exams", status_code=201)
 def create_exam(body: ExamIn, exams: ExamStoreDep) -> Exam:
-    """Save a new answer key."""
-    return exams.create(body.name.strip() or "Untitled answer key", body.questions)
+    """Save a new evaluator, with any questions it already has."""
+    return exams.create(body.name.strip() or "Untitled evaluator", body.questions)
 
 
 @router.post("/exams/from-document")
@@ -163,20 +179,61 @@ async def create_exam_from_document(
             422, "No text was found on any page of this document. Extract the text again, perhaps with another model."
         )
     model = choose_model(body.model, settings)
+
+    def save(key: AnswerKey) -> Exam:
+        name = body.name.strip() or key.name or PurePath(document.filename).stem or "Evaluator"
+        return exams.create(name, key.questions)
+
     return ndjson_response(
-        _answer_key_events(
-            ollama=ollama,
-            exams=exams,
-            document=document,
-            model=model,
-            name=body.name.strip(),
-            num_ctx=settings.ollama_num_ctx,
+        _answer_key_events(ollama=ollama, document=document, model=model, num_ctx=settings.ollama_num_ctx, save=save)
+    )
+
+
+@router.post("/exams/{exam_id}/read-key")
+async def read_exam_key(
+    exam_id: str,
+    body: ReadKeyRequest,
+    settings: SettingsDep,
+    store: StoreDep,
+    exams: ExamStoreDep,
+    ollama: OllamaDep,
+) -> StreamingResponse:
+    """Read an evaluator's questions from its key file with an AI model, replacing any questions it had.
+
+    Every page of the key file must have its text extracted. Streams the same
+    events as ``/exams/from-document``; ``done`` has the updated evaluator.
+    """
+    exam = _load_exam(exams, exam_id)
+    if not exam.key_document_id:
+        raise HTTPException(409, "Upload the question paper with its answer key first.")
+    document = load_document(store, exam.key_document_id)
+    _require_text(document)
+    if not any(page.ocr and page.ocr.text.strip() for page in document.pages):
+        raise HTTPException(
+            422, "No text was found on any page of the key file. Extract the text again, perhaps with another model."
         )
+    model = choose_model(body.model, settings)
+
+    def save(key: AnswerKey) -> Exam:
+        current = exams.get(exam_id)
+        # Keep a name the teacher gave; otherwise use the exam's title, or the file's name.
+        name = current.name
+        if name.strip() in PLACEHOLDER_NAMES:
+            name = key.name or PurePath(document.filename).stem or "Evaluator"
+        return exams.update(exam_id, name, key.questions)
+
+    return ndjson_response(
+        _answer_key_events(ollama=ollama, document=document, model=model, num_ctx=settings.ollama_num_ctx, save=save)
     )
 
 
 async def _answer_key_events(
-    *, ollama: OllamaClient, exams: ExamStore, document: StoredDocument, model: str, name: str, num_ctx: int
+    *,
+    ollama: OllamaClient,
+    document: StoredDocument,
+    model: str,
+    num_ctx: int,
+    save: Callable[[AnswerKey], Exam],
 ) -> AsyncIterator[dict[str, Any]]:
     text = document_text(document)
     yield {"type": "start", "model": model, "pages": len(document.pages), "characters": len(text)}
@@ -195,9 +252,7 @@ async def _answer_key_events(
         return
     finally:
         reading.cancel()
-    exam = await asyncio.to_thread(
-        exams.create, name or key.name or PurePath(document.filename).stem or "Answer key", key.questions
-    )
+    exam = await asyncio.to_thread(save, key)
     yield {"type": "done", "exam": exam.model_dump(mode="json")}
 
 
@@ -209,19 +264,23 @@ def get_exam(exam_id: str, exams: ExamStoreDep) -> Exam:
 @router.put("/exams/{exam_id}")
 def update_exam(exam_id: str, body: ExamIn, exams: ExamStoreDep) -> Exam:
     try:
-        return exams.update(exam_id, body.name.strip() or "Untitled answer key", body.questions)
+        return exams.update(exam_id, body.name.strip() or "Untitled evaluator", body.questions)
     except ExamNotFoundError:
-        raise HTTPException(404, "Answer key not found.") from None
+        raise HTTPException(404, "Evaluator not found.") from None
 
 
 @router.delete("/exams/{exam_id}", status_code=204)
-def delete_exam(exam_id: str, exams: ExamStoreDep, evaluations: EvaluationStoreDep) -> Response:
-    """Delete an answer key, with the evaluations made with it."""
+def delete_exam(exam_id: str, store: StoreDep, exams: ExamStoreDep, evaluations: EvaluationStoreDep) -> Response:
+    """Delete an evaluator, with its key file, its answer papers and their marks."""
     try:
         exams.delete(exam_id)
     except ExamNotFoundError:
-        raise HTTPException(404, "Answer key not found.") from None
+        raise HTTPException(404, "Evaluator not found.") from None
     evaluations.delete_where(exam_id=exam_id)
+    for document in store.list_documents():
+        if document.exam_id == exam_id:
+            with contextlib.suppress(DocumentNotFoundError):
+                store.delete(document.id)
     return Response(status_code=204)
 
 
@@ -414,7 +473,7 @@ def _load_exam(exams: ExamStore, exam_id: str) -> Exam:
     try:
         return exams.get(exam_id)
     except ExamNotFoundError:
-        raise HTTPException(404, "Answer key not found.") from None
+        raise HTTPException(404, "Evaluator not found.") from None
 
 
 def _load_evaluation(evaluations: EvaluationStore, evaluation_id: str) -> Evaluation:

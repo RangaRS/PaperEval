@@ -77,7 +77,7 @@ def test_every_question_gets_an_id_of_its_own(client: TestClient) -> None:
     ids = [question["id"] for question in exam["questions"]]
     assert ids[0] == "same"
     assert len(set(ids)) == 3
-    assert exam["name"] == "Untitled answer key"
+    assert exam["name"] == "Untitled evaluator"
     # Scripts can only be evaluated once every question has marks.
     (summary,) = client.get("/api/exams").json()
     assert summary["unmarked_questions"] == ["Q1", "Q2", "Q3"]

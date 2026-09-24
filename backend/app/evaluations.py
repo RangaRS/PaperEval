@@ -16,10 +16,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ValidationError, computed_field
 
-from .exams import Exam, Question
+from .exams import Exam, ExamStore, Question
 from .grading import Progress, document_text, mark_answer, progress_events, split_answers
 from .ollama import OllamaClient, OllamaError, UnusableReplyError
-from .storage import ID_PATTERN, StoredDocument, utc_now, write_json_atomic
+from .storage import ID_PATTERN, DocumentStore, StoredDocument, utc_now, write_json_atomic
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -186,6 +186,26 @@ class EvaluationStore:
         if not ID_PATTERN.match(evaluation_id):
             raise EvaluationNotFoundError(evaluation_id)
         return self.root / f"{evaluation_id}.json"
+
+
+def adopt_marked_papers(documents: DocumentStore, exams: ExamStore, evaluations: EvaluationStore) -> int:
+    """Put answer papers marked before there were evaluators into the evaluator they were marked against.
+
+    Earlier versions kept every upload in one list. A document that was evaluated but belongs to no
+    evaluator joins the evaluator of its latest evaluation. Returns how many documents moved.
+    """
+    exam_ids = {exam.id for exam in exams.list_exams()}
+    latest: dict[str, str] = {}
+    for evaluation in evaluations.list_evaluations():  # Newest first.
+        if evaluation.exam_id in exam_ids:
+            latest.setdefault(evaluation.document_id, evaluation.exam_id)
+    moved = 0
+    for document in documents.list_documents():
+        exam_id = latest.get(document.id)
+        if document.exam_id is None and exam_id is not None:
+            documents.assign(document.id, exam_id, "script")
+            moved += 1
+    return moved
 
 
 async def evaluation_events(

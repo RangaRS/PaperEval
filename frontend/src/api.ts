@@ -20,12 +20,18 @@ export interface Page {
   ocr: OcrResult | null
 }
 
+/** What a document is to its evaluator: the question paper with the key, or a student's answer paper. */
+export type DocumentRole = 'key' | 'script'
+
 export interface DocumentInfo {
   id: string
   filename: string
   kind: 'pdf' | 'image'
   created_at: string
   pages: Page[]
+  /** The evaluator the document belongs to, if any. */
+  exam_id: string | null
+  role: DocumentRole | null
 }
 
 export interface ModelInfo {
@@ -75,7 +81,7 @@ export interface Question {
   max_marks: number
 }
 
-/** An answer key: an exam's questions with their model answers, marking keys and marks. */
+/** An evaluator: an exam's questions with their model answers, marking keys and marks. */
 export interface Exam {
   id: string
   name: string
@@ -83,6 +89,8 @@ export interface Exam {
   updated_at: string
   questions: Question[]
   total_marks: number
+  /** The uploaded question paper with its answers and marking scheme. */
+  key_document_id: string | null
 }
 
 export interface ExamSummary {
@@ -94,6 +102,7 @@ export interface ExamSummary {
   total_marks: number
   /** Questions without marks, which need them before scripts can be evaluated. */
   unmarked_questions: string[]
+  key_document_id: string | null
 }
 
 export interface ExamDraft {
@@ -239,11 +248,20 @@ export const api = {
 
   listDocuments: () => request<DocumentInfo[]>('/api/documents'),
 
-  uploadDocument(file: File): Promise<DocumentInfo> {
+  /** Upload a PDF or image, optionally into an evaluator as its key file or as an answer paper. */
+  uploadDocument(file: File, to?: { examId: string; role: DocumentRole }): Promise<DocumentInfo> {
     const form = new FormData()
     form.append('file', file)
+    if (to) {
+      form.append('exam_id', to.examId)
+      form.append('role', to.role)
+    }
     return request<DocumentInfo>('/api/documents', { method: 'POST', body: form })
   },
+
+  /** Put an uploaded document into an evaluator, or (with nulls) take it out. */
+  assignDocument: (documentId: string, to: { exam_id: string | null; role: DocumentRole | null }) =>
+    request<DocumentInfo>(`/api/documents/${documentId}`, jsonBody(to, 'PATCH')),
 
   deleteDocument: (documentId: string) => request<void>(`/api/documents/${documentId}`, { method: 'DELETE' }),
 
@@ -264,6 +282,10 @@ export const api = {
   updateExam: (examId: string, draft: ExamDraft) => request<Exam>(`/api/exams/${examId}`, jsonBody(draft, 'PUT')),
 
   deleteExam: (examId: string) => request<void>(`/api/exams/${examId}`, { method: 'DELETE' }),
+
+  /** Have a model read an evaluator's questions from its key file, whose text has been extracted. */
+  readKey: (examId: string, options: { model: string }, signal?: AbortSignal) =>
+    streamEvents<AnswerKeyEvent>(`/api/exams/${examId}/read-key`, options, signal),
 
   /** Have a model read an answer key from a document whose text has been extracted, yielding its progress. */
   examFromDocument: (options: { document_id: string; model: string }, signal?: AbortSignal) =>

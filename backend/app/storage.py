@@ -29,6 +29,8 @@ from .pages import RenderedPage, SourceKind
 logger = logging.getLogger(__name__)
 
 META_FILE = "meta.json"
+# What a document is to the evaluator (exam) it belongs to.
+DocumentRole = Literal["key", "script"]
 THUMBNAIL_SIZE = (240, 320)
 ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 _STAGING_PREFIX = ".staging-"
@@ -66,6 +68,9 @@ class StoredDocument(BaseModel):
     kind: Literal["pdf", "image"]
     created_at: datetime
     pages: list[StoredPage]
+    # The evaluator the document belongs to: its question paper and key, or a student's answer paper.
+    exam_id: str | None = None
+    role: DocumentRole | None = None
 
     def page(self, number: int) -> StoredPage | None:
         if 1 <= number <= len(self.pages):
@@ -83,7 +88,15 @@ class DocumentStore:
         # Serializes read-modify-write cycles on meta.json files.
         self._lock = threading.Lock()
 
-    def create(self, *, filename: str, kind: SourceKind, pages: Iterable[RenderedPage]) -> StoredDocument:
+    def create(
+        self,
+        *,
+        filename: str,
+        kind: SourceKind,
+        pages: Iterable[RenderedPage],
+        exam_id: str | None = None,
+        role: DocumentRole | None = None,
+    ) -> StoredDocument:
         """Save the pages as a new document. Nothing is kept if any page fails."""
         document_id = uuid.uuid4().hex
         self.root.mkdir(parents=True, exist_ok=True)
@@ -99,6 +112,8 @@ class DocumentStore:
                 kind=kind,
                 created_at=utc_now(),
                 pages=stored_pages,
+                exam_id=exam_id,
+                role=role,
             )
             write_json_atomic(staging / META_FILE, document)
             staging.rename(self.root / document_id)
@@ -141,6 +156,18 @@ class DocumentStore:
     def file_path(self, document_id: str, filename: str) -> Path:
         """Path of one of a document's files (page image or thumbnail)."""
         return self._document_dir(document_id) / Path(filename).name
+
+    def assign(self, document_id: str, exam_id: str | None, role: DocumentRole | None) -> StoredDocument:
+        """Make the document part of an evaluator, or of none."""
+        directory = self._document_dir(document_id)
+        with self._lock:
+            try:
+                document = self._read(directory)
+            except FileNotFoundError:
+                raise DocumentNotFoundError(document_id) from None
+            document = document.model_copy(update={"exam_id": exam_id, "role": role if exam_id else None})
+            write_json_atomic(directory / META_FILE, document)
+        return document
 
     def save_ocr(self, document_id: str, page_number: int, result: OcrResult) -> StoredPage:
         directory = self._document_dir(document_id)

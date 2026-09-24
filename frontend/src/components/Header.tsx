@@ -29,7 +29,7 @@ export function Header({
       <div className="brand">
         <img src="/favicon.svg" alt="" width={26} height={26} />
         <span className="brand-name">PaperEval</span>
-        <span className="brand-tagline">Read and mark answer scripts with Ollama models</span>
+        <span className="brand-tagline">Mark answer papers against an answer key with Ollama models</span>
       </div>
       <div className="topbar-controls">
         <ConnectionBadge status={status} checking={checking} onRefresh={onRefresh} />
@@ -103,8 +103,8 @@ function ModelPicker({
     </option>
   )
   return (
-    <label className="model-picker" title="The Ollama model that reads the pages">
-      <span className="model-picker-label">Model</span>
+    <label className="model-picker" title="The vision model that extracts the text of every page, one page at a time">
+      <span className="model-picker-label">Reading model</span>
       <select
         value={value}
         onChange={(event) => (event.target.value === ADD_MODEL ? onAddModel() : onChange(event.target.value))}

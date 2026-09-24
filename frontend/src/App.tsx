@@ -5,34 +5,75 @@ import {
   api,
   type AppConfig,
   type DocumentInfo,
+  type DocumentRole,
   type Evaluation,
   type EvaluationSummary,
   type Exam,
   type ExamSummary,
   type OllamaStatus,
 } from './api'
-import { EmptyState } from './components/EmptyState'
-import { EvaluateDialog, type EvaluateTarget } from './components/EvaluateDialog'
 import { EvaluationPanel } from './components/EvaluationPanel'
-import { ExamEditor } from './components/ExamEditor'
-import { ExamList, ExamsEmptyState } from './components/ExamList'
+import { EvaluatorList } from './components/EvaluatorList'
+import { EvaluatorView } from './components/EvaluatorView'
 import { Header } from './components/Header'
-import { KeyFromDocumentDialog } from './components/KeyFromDocumentDialog'
+import { KeyStep } from './components/KeyStep'
+import { PapersStep } from './components/PapersStep'
+import { ResultsStep } from './components/ResultsStep'
 import { SettingsDialog } from './components/SettingsDialog'
-import { PaperList, Sidebar, type Selection, type SidebarMode, type UploadProgress } from './components/Sidebar'
 import { Toasts } from './components/Toasts'
+import { Welcome } from './components/Welcome'
 import { Workspace, type WorkspacePanel } from './components/Workspace'
-import { EvaluationRunner } from './evaluationRunner'
-import { blankQuestion, joinList, parseAnswerKey, questionLabel, summarize, withSummary } from './exams'
+import { EvaluationRunner, isRunning } from './evaluationRunner'
+import { isKeyReading, keyProblem, paperState, summaryOf, type EvaluatorTab, type KeyRead } from './evaluator'
+import { joinList, parseAnswerKey, summarize, withSummary } from './exams'
 import { isBoolean, isString, isStringArray, useFileDrop, useLocalStorage, useToasts } from './hooks'
 import { chooseModel, modelGroups, offeredNames } from './models'
 import { OcrQueue, pageKey } from './ocrQueue'
-import { documentText, downloadText, errorMessage, fileStem, pluralize } from './utils'
+import { errorMessage, fileStem, pluralize } from './utils'
 
 const MB = 1024 * 1024
 const isPrompt = (value: unknown): value is string | null => value === null || typeof value === 'string'
-const isMode = (value: unknown): value is SidebarMode => value === 'papers' || value === 'keys'
 const isPanel = (value: unknown): value is WorkspacePanel => value === 'text' || value === 'marks'
+
+/** What the main area shows. */
+type View =
+  | { kind: 'home' }
+  | { kind: 'evaluator'; examId: string; tab: EvaluatorTab }
+  /** A document of an evaluator, page by page: an answer paper with its marks, or the key file. */
+  | { kind: 'document'; examId: string; documentId: string; pageNumber: number }
+
+interface UploadProgress {
+  examId: string
+  role: DocumentRole
+  name: string
+  index: number
+  total: number
+}
+
+/**
+ * What to show: the chosen view, or when nothing was chosen yet (or what was chosen was deleted),
+ * the evaluator used last. It opens on its answer papers once it has questions.
+ */
+function currentView(chosen: View | null, exams: ExamSummary[], documents: DocumentInfo[], last: string): View {
+  const fallback = exams.find((exam) => exam.id === last) ?? exams[0]
+  const start: View = fallback
+    ? { kind: 'evaluator', examId: fallback.id, tab: fallback.question_count > 0 ? 'papers' : 'key' }
+    : { kind: 'home' }
+  if (!chosen || chosen.kind === 'home') return chosen ?? start
+  const examId = chosen.examId
+  if (!exams.some((exam) => exam.id === examId)) return start
+  if (chosen.kind === 'document' && !documents.some((document) => document.id === chosen.documentId)) {
+    return { kind: 'evaluator', examId, tab: 'papers' }
+  }
+  return chosen
+}
+
+/** An evaluator's answer papers, in the order they were uploaded (and are marked). */
+function papersOf(documents: DocumentInfo[], examId: string) {
+  return documents
+    .filter((document) => document.exam_id === examId && document.role === 'script')
+    .sort((a, b) => a.created_at.localeCompare(b.created_at))
+}
 
 function withPageText(
   documents: DocumentInfo[],
@@ -47,47 +88,39 @@ function withPageText(
   )
 }
 
-const examSummary = (exam: Exam): ExamSummary => ({
-  id: exam.id,
-  name: exam.name,
-  created_at: exam.created_at,
-  updated_at: exam.updated_at,
-  question_count: exam.questions.length,
-  total_marks: exam.total_marks,
-  unmarked_questions: exam.questions.flatMap((question, index) =>
-    question.max_marks <= 0 ? [questionLabel(question.number, index)] : [],
-  ),
-})
-
 export default function App() {
   const [config, setConfig] = useState<AppConfig | null>(null)
   const [status, setStatus] = useState<OllamaStatus | null>(null)
   const [checking, setChecking] = useState(true)
-  const [documents, setDocuments] = useState<DocumentInfo[]>([])
-  const [loadingDocuments, setLoadingDocuments] = useState(true)
-  const [selection, setSelection] = useState<Selection | null>(null)
-  const [upload, setUpload] = useState<UploadProgress | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [focusModelInput, setFocusModelInput] = useState(false)
   const [savedModel, setSavedModel] = useLocalStorage('papereval.model', '', isString)
   const [addedModels, setAddedModels] = useLocalStorage<string[]>('papereval.addedModels', [], isStringArray)
   const [customPrompt, setCustomPrompt] = useLocalStorage<string | null>('papereval.prompt', null, isPrompt)
+  const [savedGradingModel, setSavedGradingModel] = useLocalStorage('papereval.gradingModel', '', isString)
+  const [panel, setPanel] = useLocalStorage<WorkspacePanel>('papereval.panel', 'marks', isPanel)
+  const [answerPreview, setAnswerPreview] = useLocalStorage('papereval.answerPreview', true, isBoolean)
+  const [lastEvaluator, setLastEvaluator] = useLocalStorage('papereval.evaluator', '', isString)
   const { toasts, notify, dismiss: dismissToast } = useToasts()
 
-  const [mode, setMode] = useLocalStorage<SidebarMode>('papereval.mode', 'papers', isMode)
-  const [panel, setPanel] = useLocalStorage<WorkspacePanel>('papereval.panel', 'text', isPanel)
-  const [answerPreview, setAnswerPreview] = useLocalStorage('papereval.answerPreview', true, isBoolean)
-  const [savedGradingModel, setSavedGradingModel] = useLocalStorage('papereval.gradingModel', '', isString)
+  const [documents, setDocuments] = useState<DocumentInfo[]>([])
   const [exams, setExams] = useState<ExamSummary[]>([])
-  const [loadingExams, setLoadingExams] = useState(true)
-  const [chosenExamId, setChosenExamId] = useState<string | null>(null)
   const [evaluations, setEvaluations] = useState<EvaluationSummary[]>([])
+  const [loading, setLoading] = useState(true)
   const [details, setDetails] = useState<Record<string, Evaluation>>({})
   const [examDetails, setExamDetails] = useState<Record<string, Exam>>({})
-  const [evaluateTarget, setEvaluateTarget] = useState<EvaluateTarget | null>(null)
-  const [keyFromDocumentOpen, setKeyFromDocumentOpen] = useState(false)
-  // Whether the answer key being edited has unsaved changes.
+  const [keyReads, setKeyReads] = useState<Record<string, KeyRead>>({})
+  const [chosenView, setChosenView] = useState<View | null>(null)
+  const [upload, setUpload] = useState<UploadProgress | null>(null)
+  // Whether the evaluator being edited has unsaved changes.
   const editorDirty = useRef(false)
+
+  // The documents, kept up to date at once, for work that starts right after a change (such as an upload).
+  const documentsRef = useRef<DocumentInfo[]>([])
+  const updateDocuments = useCallback((change: (current: DocumentInfo[]) => DocumentInfo[]) => {
+    documentsRef.current = change(documentsRef.current)
+    setDocuments(documentsRef.current)
+  }, [])
 
   const [queue] = useState(
     () =>
@@ -95,7 +128,7 @@ export default function App() {
         run: (job, signal) =>
           api.extractText(job.documentId, job.pageNumber, { model: job.model, prompt: job.prompt }, signal),
         onResult: (job, result) =>
-          setDocuments((current) => withPageText(current, job.documentId, job.pageNumber, result)),
+          updateDocuments((current) => withPageText(current, job.documentId, job.pageNumber, result)),
       }),
   )
   const jobs = useSyncExternalStore(queue.subscribe, queue.getSnapshot)
@@ -126,24 +159,15 @@ export default function App() {
       .config()
       .then(setConfig)
       .catch((error) => notify(errorMessage(error)))
-    api
-      .listDocuments()
-      .then((loaded) => {
-        setDocuments(loaded)
-        setSelection((current) => current ?? (loaded[0] ? { documentId: loaded[0].id, pageNumber: 1 } : null))
+    Promise.all([api.listDocuments(), api.listExams(), api.listEvaluations()])
+      .then(([loadedDocuments, loadedExams, loadedEvaluations]) => {
+        updateDocuments(() => loadedDocuments)
+        setExams(loadedExams)
+        setEvaluations(loadedEvaluations)
       })
-      .catch((error) => notify(errorMessage(error)))
-      .finally(() => setLoadingDocuments(false))
-    api
-      .listExams()
-      .then(setExams)
-      .catch((error) => notify(`Could not load the answer keys: ${errorMessage(error)}`))
-      .finally(() => setLoadingExams(false))
-    api
-      .listEvaluations()
-      .then(setEvaluations)
-      .catch((error) => notify(`Could not load the marks: ${errorMessage(error)}`))
-  }, [notify])
+      .catch((error) => notify(`Could not load your evaluators: ${errorMessage(error)}`))
+      .finally(() => setLoading(false))
+  }, [notify, updateDocuments])
 
   const lastCheck = useRef(0)
   const loadStatus = useCallback(() => {
@@ -186,6 +210,7 @@ export default function App() {
     () => modelGroups(status?.models ?? [], [...addedModels, configuredModel]),
     [status, addedModels, configuredModel],
   )
+  // The vision model that reads the pages.
   const model = chooseModel(savedModel, configuredModel, groups, (status?.models.length ?? 0) > 0)
   const prompt = customPrompt ?? config?.default_prompt ?? ''
   const setPrompt = (value: string) => setCustomPrompt(value === config?.default_prompt ? null : value)
@@ -194,11 +219,6 @@ export default function App() {
   const allModels = status?.models ?? []
   const extraModels = useMemo(() => [...addedModels, configuredModel].filter(Boolean), [addedModels, configuredModel])
 
-  const documentsRef = useRef(documents)
-  useEffect(() => {
-    documentsRef.current = documents
-  }, [documents])
-
   /**
    * Extract the text of a document's pages one by one: the pages that have none,
    * or with `all`, every page. Resolves when they are done; rejects if any failed.
@@ -206,10 +226,10 @@ export default function App() {
   const prepareDocument = useCallback(
     async (documentId: string, signal: AbortSignal, options?: { all?: boolean }) => {
       const document = documentsRef.current.find((candidate) => candidate.id === documentId)
-      if (!document) throw new Error('The paper was deleted.')
+      if (!document) throw new Error('The document was deleted.')
       const missing = document.pages.filter((page) => options?.all || !page.ocr).map((page) => page.number)
       if (missing.length === 0) return
-      if (!model) throw new Error('Some pages have no text yet. Choose a vision model at the top to read them.')
+      if (!model) throw new Error('Choose a reading model at the top: it reads the text of the pages.')
       for (const pageNumber of missing) queue.enqueue({ documentId, pageNumber, model, prompt })
       const keys = missing.map((pageNumber) => pageKey(documentId, pageNumber))
       const stop = () => queue.cancelAll((job) => keys.includes(job.key))
@@ -224,9 +244,7 @@ export default function App() {
       )
       if (failed.length > 0) {
         const pages = failed.length === 1 ? 'page' : 'pages'
-        throw new Error(
-          `The text of ${pages} ${joinList(failed.map(String))} could not be extracted. See the ${pages} for why.`,
-        )
+        throw new Error(`The text of ${pages} ${joinList(failed.map(String))} could not be extracted.`)
       }
     },
     [queue, model, prompt],
@@ -246,183 +264,86 @@ export default function App() {
 
   const removeModel = (name: string) => setAddedModels((current) => current.filter((added) => added !== name))
 
-  /** Whether it is fine to leave the answer key being edited. */
-  const canLeaveEditor = useCallback(
-    () => !editorDirty.current || window.confirm('Discard the unsaved changes to this answer key?'),
-    [],
-  )
+  // ---------- What is shown ----------
+
+  const view = currentView(chosenView, exams, documents, lastEvaluator)
+  const currentExamId = view.kind === 'home' ? null : view.examId
+  const summary = exams.find((exam) => exam.id === currentExamId)
+
+  const navigate = (next: View): boolean => {
+    const leavingEvaluator = view.kind === 'evaluator' && (next.kind !== 'evaluator' || next.examId !== view.examId)
+    if (leavingEvaluator && editorDirty.current && !window.confirm('Discard the unsaved changes to this evaluator?')) {
+      return false
+    }
+    if (leavingEvaluator) editorDirty.current = false
+    setChosenView(next)
+    if (next.kind !== 'home') setLastEvaluator(next.examId)
+    return true
+  }
+
   const setEditorDirty = useCallback((dirty: boolean) => {
     editorDirty.current = dirty
   }, [])
 
-  const changeMode = (next: SidebarMode) => {
-    if (next === mode || (mode === 'keys' && !canLeaveEditor())) return
-    setMode(next)
-  }
+  // ---------- Evaluators ----------
 
-  const selectPage = useCallback(
-    (documentId: string, pageNumber: number) => setSelection({ documentId, pageNumber }),
-    [],
-  )
-
-  const extract = useCallback(
-    (documentId: string, pageNumber: number) => {
-      if (!model) {
-        notify('Choose a vision model first.')
-        return
-      }
-      queue.enqueue({ documentId, pageNumber, model, prompt })
+  const loadingExams = useRef(new Set<string>())
+  const loadExam = useCallback(
+    (examId: string) => {
+      if (loadingExams.current.has(examId)) return
+      loadingExams.current.add(examId)
+      api
+        .getExam(examId)
+        .then((exam) => setExamDetails((current) => ({ ...current, [exam.id]: exam })))
+        .catch((error) => notify(`Could not load the evaluator: ${errorMessage(error)}`))
+        .finally(() => loadingExams.current.delete(examId))
     },
-    [queue, model, prompt, notify],
+    [notify],
   )
-
-  const extractPage = useCallback(
-    (documentId: string, pageNumber: number) => {
-      setSelection({ documentId, pageNumber })
-      extract(documentId, pageNumber)
-    },
-    [extract],
-  )
-
-  const stopPage = useCallback(
-    (documentId: string, pageNumber: number) => queue.cancel(pageKey(documentId, pageNumber)),
-    [queue],
-  )
-
-  const extractAll = useCallback(
-    (document: DocumentInfo) => {
-      if (!model) {
-        notify('Choose a vision model first.')
-        return
-      }
-      for (const page of document.pages) {
-        if (!page.ocr) queue.enqueue({ documentId: document.id, pageNumber: page.number, model, prompt })
-      }
-    },
-    [queue, model, prompt, notify],
-  )
-
-  const stopAll = useCallback(
-    (document: DocumentInfo) => queue.cancelAll((job) => job.documentId === document.id),
-    [queue],
-  )
-
-  const downloadDocument = useCallback(
-    (document: DocumentInfo) => downloadText(`${fileStem(document.filename)}.txt`, documentText(document)),
-    [],
-  )
-
-  const deleteDocument = useCallback(
-    async (document: DocumentInfo) => {
-      const marked = evaluations.some((evaluation) => evaluation.document_id === document.id)
-      const what = marked ? 'its extracted text and marks' : 'its extracted text'
-      if (!window.confirm(`Delete "${document.filename}" and ${what}?`)) return
-      queue.remove((job) => job.documentId === document.id)
-      runner.remove(document.id)
-      try {
-        await api.deleteDocument(document.id)
-      } catch (error) {
-        notify(`Could not delete ${document.filename}: ${errorMessage(error)}`)
-        return
-      }
-      const remaining = documents.filter((candidate) => candidate.id !== document.id)
-      setDocuments((current) => current.filter((candidate) => candidate.id !== document.id))
-      setEvaluations((current) => current.filter((evaluation) => evaluation.document_id !== document.id))
-      setSelection((current) =>
-        current?.documentId !== document.id
-          ? current
-          : remaining[0]
-            ? { documentId: remaining[0].id, pageNumber: 1 }
-            : null,
-      )
-    },
-    [queue, runner, notify, documents, evaluations],
-  )
-
-  const openMarks = useCallback(
-    (document: DocumentInfo) => {
-      setSelection((current) =>
-        current?.documentId === document.id ? current : { documentId: document.id, pageNumber: 1 },
-      )
-      setPanel('marks')
-    },
-    [setPanel],
-  )
-
-  // Uploads run one after another, even when more files are dropped during an upload.
-  const uploads = useRef(Promise.resolve())
-  const uploadFiles = useCallback(
-    (files: File[]) => {
-      const limitMb = config?.max_upload_mb ?? 50
-      uploads.current = uploads.current.then(async () => {
-        for (const [index, file] of files.entries()) {
-          if (file.size > limitMb * MB) {
-            notify(`${file.name} is larger than the ${limitMb} MB limit.`)
-            continue
-          }
-          setUpload({ name: file.name, index: index + 1, total: files.length })
-          try {
-            const document = await api.uploadDocument(file)
-            setDocuments((current) => [document, ...current])
-            setSelection({ documentId: document.id, pageNumber: 1 })
-          } catch (error) {
-            notify(`Could not upload ${file.name}: ${errorMessage(error)}`)
-          }
-        }
-        setUpload(null)
-      })
-    },
-    [config, notify],
-  )
-  const dragging = useFileDrop(uploadFiles)
-
-  // ---------- Answer keys ----------
-
-  const selectedExam = exams.find((exam) => exam.id === chosenExamId) ?? exams[0]
-
-  const selectExam = (examId: string) => {
-    if (examId === selectedExam?.id || !canLeaveEditor()) return
-    setChosenExamId(examId)
-  }
-
-  const addExam = (exam: Exam) => {
-    setExams((current) => [examSummary(exam), ...current.filter((candidate) => candidate.id !== exam.id)])
-    setExamDetails((current) => ({ ...current, [exam.id]: exam }))
-    setChosenExamId(exam.id)
-    setMode('keys')
-  }
-
-  const createExam = async () => {
-    if (mode === 'keys' && !canLeaveEditor()) return
-    try {
-      addExam(await api.createExam({ name: 'Untitled answer key', questions: [blankQuestion([])] }))
-    } catch (error) {
-      notify(`Could not create an answer key: ${errorMessage(error)}`)
-    }
-  }
-
-  const importExam = async (file: File) => {
-    if (mode === 'keys' && !canLeaveEditor()) return
-    try {
-      const draft = parseAnswerKey(await file.text(), fileStem(file.name))
-      const exam = await api.createExam(draft)
-      addExam(exam)
-      notify(`Imported ${exam.name} with ${pluralize(exam.questions.length, 'question')}.`, 'info')
-    } catch (error) {
-      notify(`Could not import ${file.name}: ${errorMessage(error)}`)
-    }
-  }
+  useEffect(() => {
+    if (currentExamId && !examDetails[currentExamId]) loadExam(currentExamId)
+  }, [currentExamId, examDetails, loadExam])
 
   const examSaved = useCallback((exam: Exam) => {
-    setExams((current) => current.map((candidate) => (candidate.id === exam.id ? examSummary(exam) : candidate)))
     setExamDetails((current) => ({ ...current, [exam.id]: exam }))
+    setExams((current) => current.map((candidate) => (candidate.id === exam.id ? summaryOf(exam) : candidate)))
   }, [])
 
-  const deleteExam = async (exam: Exam) => {
-    const marked = evaluations.filter((evaluation) => evaluation.exam_id === exam.id).length
-    const warning =
-      marked > 0 ? ` The marks of the ${pluralize(marked, 'paper')} evaluated with it are deleted too.` : ''
-    if (!window.confirm(`Delete the answer key "${exam.name}"?${warning}`)) return
+  const setKeyDocument = (examId: string, documentId: string | null) => {
+    setExams((current) => current.map((exam) => (exam.id === examId ? { ...exam, key_document_id: documentId } : exam)))
+    setExamDetails((current) =>
+      current[examId] ? { ...current, [examId]: { ...current[examId], key_document_id: documentId } } : current,
+    )
+  }
+
+  const createEvaluator = async () => {
+    if (view.kind === 'evaluator' && editorDirty.current && !window.confirm('Discard the unsaved changes?')) return
+    try {
+      const exam = await api.createExam({ name: 'Untitled evaluator', questions: [] })
+      setExams((current) => [summaryOf(exam), ...current])
+      setExamDetails((current) => ({ ...current, [exam.id]: exam }))
+      editorDirty.current = false
+      setChosenView({ kind: 'evaluator', examId: exam.id, tab: 'key' })
+      setLastEvaluator(exam.id)
+    } catch (error) {
+      notify(`Could not create an evaluator: ${errorMessage(error)}`)
+    }
+  }
+
+  const deleteEvaluator = async (exam: ExamSummary) => {
+    const papers = papersOf(documents, exam.id)
+    const parts = [
+      exam.key_document_id ? 'its key file' : null,
+      papers.length > 0 ? `its ${pluralize(papers.length, 'answer paper')}` : null,
+      evaluations.some((evaluation) => evaluation.exam_id === exam.id) ? 'their marks' : null,
+    ].filter((part) => part !== null)
+    const also = parts.length > 0 ? `, with ${joinList(parts)}` : ''
+    if (!window.confirm(`Delete the evaluator "${exam.name}"${also}?`)) return
+    keyControllers.current.get(exam.id)?.abort()
+    for (const document of documents.filter((candidate) => candidate.exam_id === exam.id)) {
+      runner.remove(document.id)
+      queue.remove((job) => job.documentId === document.id)
+    }
     try {
       await api.deleteExam(exam.id)
     } catch (error) {
@@ -431,68 +352,236 @@ export default function App() {
     }
     editorDirty.current = false
     setExams((current) => current.filter((candidate) => candidate.id !== exam.id))
+    updateDocuments((current) => current.filter((document) => document.exam_id !== exam.id))
     setEvaluations((current) => current.filter((evaluation) => evaluation.exam_id !== exam.id))
-    setChosenExamId(null)
+    setChosenView(null)
   }
 
-  const openPaper = useCallback(
-    (documentId: string) => {
-      if (!canLeaveEditor()) return
-      setMode('papers')
-      setSelection((current) => (current?.documentId === documentId ? current : { documentId, pageNumber: 1 }))
-      setPanel('marks')
-    },
-    [canLeaveEditor, setMode, setPanel],
-  )
+  // ---------- Reading the key file ----------
 
-  const openKey = useCallback(
-    (examId: string) => {
-      setChosenExamId(examId)
-      setMode('keys')
-    },
-    [setMode],
-  )
+  const keyControllers = useRef(new Map<string, AbortController>())
+  const updateKeyRead = (examId: string, changes: Partial<KeyRead>) =>
+    setKeyReads((current) => (current[examId] ? { ...current, [examId]: { ...current[examId], ...changes } } : current))
+  const forgetKeyRead = (examId: string) =>
+    setKeyReads((current) => {
+      const { [examId]: _, ...rest } = current
+      void _
+      return rest
+    })
 
-  // ---------- Evaluations ----------
+  /** Extract the text of the key file's pages one by one, then have the model read the questions from it. */
+  const readKey = async (examId: string, documentId: string, extractAll = false) => {
+    const document = documentsRef.current.find((candidate) => candidate.id === documentId)
+    if (!document) return
+    if (!gradingModel) {
+      notify('Choose a marking model first.')
+      return
+    }
+    keyControllers.current.get(examId)?.abort()
+    const abort = new AbortController()
+    keyControllers.current.set(examId, abort)
+    // A read that was stopped, or replaced by a newer one, leaves the progress alone.
+    const current = () => keyControllers.current.get(examId) === abort
+    const update = (changes: Partial<KeyRead>) => current() && updateKeyRead(examId, changes)
+    const extracting = document.pages.filter((page) => extractAll || !page.ocr).map((page) => page.number)
+    setKeyReads((current) => ({
+      ...current,
+      [examId]: {
+        documentId,
+        extracting,
+        extract: extracting.length > 0 ? 'running' : 'done',
+        read: 'waiting',
+        received: 0,
+        attempt: 1,
+      },
+    }))
+    try {
+      if (extracting.length > 0) {
+        try {
+          await prepareDocument(documentId, abort.signal, { all: extractAll })
+        } catch (error) {
+          if (abort.signal.aborted) throw error
+          update({ extract: 'failed', extractError: errorMessage(error) })
+          return
+        }
+        update({ extract: 'done' })
+      }
+      update({ read: 'running', readStartedAt: Date.now() })
+      for await (const event of api.readKey(examId, { model: gradingModel }, abort.signal)) {
+        if (event.type === 'start') update({ sent: event.characters })
+        else if (event.type === 'progress') update({ received: event.characters, attempt: event.attempt })
+        else if (event.type === 'error') {
+          update({ read: 'failed', readError: event.message, reply: event.reply })
+          return
+        } else if (event.type === 'done') {
+          // Saved on the server either way.
+          examSaved(event.exam)
+          if (!current()) return
+          forgetKeyRead(examId)
+          notify(
+            `Read ${pluralize(event.exam.questions.length, 'question')} from ${document.filename}. Check them, and set any missing marks.`,
+            'info',
+          )
+          return
+        }
+      }
+      update({ read: 'failed', readError: 'The connection closed before the model finished.' })
+    } catch (error) {
+      if (!current()) return
+      if (abort.signal.aborted) forgetKeyRead(examId)
+      else update({ read: 'failed', readError: errorMessage(error) })
+    } finally {
+      if (keyControllers.current.get(examId) === abort) keyControllers.current.delete(examId)
+    }
+  }
 
-  const loading = useRef(new Set<string>())
+  // ---------- Uploads ----------
+
+  // Uploads run one after another, even when more files are dropped during an upload.
+  const uploads = useRef(Promise.resolve())
+  const uploadFiles = (
+    files: File[],
+    to: { examId: string; role: DocumentRole },
+    onUploaded: (document: DocumentInfo) => void,
+  ) => {
+    const limitMb = config?.max_upload_mb ?? 50
+    uploads.current = uploads.current.then(async () => {
+      for (const [index, file] of files.entries()) {
+        if (file.size > limitMb * MB) {
+          notify(`${file.name} is larger than the ${limitMb} MB limit.`)
+          continue
+        }
+        setUpload({ ...to, name: file.name, index: index + 1, total: files.length })
+        try {
+          const document = await api.uploadDocument(file, to)
+          // A new key file replaces the old one, which stays uploaded but leaves the evaluator.
+          updateDocuments((current) => [
+            document,
+            ...current.map((candidate) =>
+              to.role === 'key' && candidate.exam_id === to.examId && candidate.role === 'key'
+                ? { ...candidate, exam_id: null, role: null }
+                : candidate,
+            ),
+          ])
+          onUploaded(document)
+        } catch (error) {
+          notify(`Could not upload ${file.name}: ${errorMessage(error)}`)
+        }
+      }
+      setUpload(null)
+    })
+  }
+
+  /** Whether it is fine to read the questions from a new key file, replacing the evaluator's questions. */
+  const mayReplaceQuestions = (examId: string, filename: string) => {
+    const count = exams.find((exam) => exam.id === examId)?.question_count ?? 0
+    return (
+      count === 0 ||
+      window.confirm(
+        `Read the questions from ${filename}? This replaces the ${pluralize(count, 'question')} this evaluator has now.`,
+      )
+    )
+  }
+
+  const uploadKey = (examId: string, files: File[]) => {
+    if (files.length > 1) notify('An evaluator has one key file: using the first one.', 'info')
+    if (!mayReplaceQuestions(examId, files[0].name)) return
+    uploadFiles(files.slice(0, 1), { examId, role: 'key' }, (document) => {
+      setKeyDocument(examId, document.id)
+      void readKey(examId, document.id)
+    })
+  }
+
+  const startEvaluation = (examId: string, documentId: string, marking: string) =>
+    runner.start({ kind: 'evaluate', documentId, examId, model: marking })
+
+  const uploadPapers = (examId: string, files: File[]) => {
+    const problem = keyProblem(exams.find((exam) => exam.id === examId))
+    const marking = gradingModel
+    if (!problem && !marking) notify('Choose a marking model to have the papers marked.')
+    uploadFiles(files, { examId, role: 'script' }, (document) => {
+      if (!problem && marking) startEvaluation(examId, document.id, marking)
+    })
+  }
+
+  /** Use a document uploaded earlier as the key file or as an answer paper. */
+  const assignEarlierFile = async (examId: string, documentId: string, role: DocumentRole) => {
+    const filename = documents.find((candidate) => candidate.id === documentId)?.filename ?? 'that file'
+    if (role === 'key' && !mayReplaceQuestions(examId, filename)) return
+    let document: DocumentInfo
+    try {
+      document = await api.assignDocument(documentId, { exam_id: examId, role })
+    } catch (error) {
+      notify(`Could not use that file: ${errorMessage(error)}`)
+      return
+    }
+    updateDocuments((current) =>
+      current.map((candidate) =>
+        candidate.id === documentId
+          ? document
+          : role === 'key' && candidate.exam_id === examId && candidate.role === 'key'
+            ? { ...candidate, exam_id: null, role: null }
+            : candidate,
+      ),
+    )
+    if (role === 'key') {
+      setKeyDocument(examId, documentId)
+      void readKey(examId, documentId)
+    } else if (!keyProblem(exams.find((exam) => exam.id === examId)) && gradingModel) {
+      startEvaluation(examId, documentId, gradingModel)
+    }
+  }
+
+  const importJson = async (examId: string, file: File) => {
+    const exam = examDetails[examId]
+    if (!exam) return
+    if (editorDirty.current && !window.confirm('Importing replaces the questions, and your unsaved changes. Go on?'))
+      return
+    try {
+      const draft = parseAnswerKey(await file.text(), fileStem(file.name))
+      const name = exam.name === 'Untitled evaluator' ? draft.name : exam.name
+      const saved = await api.updateExam(examId, { name, questions: draft.questions })
+      editorDirty.current = false
+      examSaved(saved)
+      notify(`Imported ${pluralize(saved.questions.length, 'question')}.`, 'info')
+    } catch (error) {
+      notify(`Could not import ${file.name}: ${errorMessage(error)}`)
+    }
+  }
+
+  const dragging = useFileDrop((files) => {
+    if (view.kind === 'home') {
+      notify('Create an evaluator first, then drop the files into it.', 'info')
+    } else if (view.kind === 'evaluator' && view.tab === 'key') {
+      uploadKey(view.examId, files)
+    } else {
+      uploadPapers(view.examId, files)
+      // Show the papers being marked.
+      if (view.kind !== 'evaluator' || view.tab !== 'papers')
+        navigate({ kind: 'evaluator', examId: view.examId, tab: 'papers' })
+    }
+  })
+
+  // ---------- Answer papers ----------
+
+  const loadingEvaluations = useRef(new Set<string>())
   const loadEvaluation = useCallback(
     (evaluationId: string) => {
-      if (loading.current.has(evaluationId)) return
-      loading.current.add(evaluationId)
+      if (loadingEvaluations.current.has(evaluationId)) return
+      loadingEvaluations.current.add(evaluationId)
       api
         .getEvaluation(evaluationId)
         .then((evaluation) => setDetails((current) => ({ ...current, [evaluation.id]: evaluation })))
         .catch((error) => notify(`Could not load the marks: ${errorMessage(error)}`))
-        .finally(() => loading.current.delete(evaluationId))
+        .finally(() => loadingEvaluations.current.delete(evaluationId))
     },
     [notify],
   )
-
-  const loadExam = useCallback(
-    (examId: string) => {
-      if (loading.current.has(examId)) return
-      loading.current.add(examId)
-      api
-        .getExam(examId)
-        .then((exam) => setExamDetails((current) => ({ ...current, [exam.id]: exam })))
-        .catch((error) => notify(`Could not load the answer key: ${errorMessage(error)}`))
-        .finally(() => loading.current.delete(examId))
-    },
-    [notify],
-  )
-
-  const startEvaluations = (documentIds: string[], examId: string, chosenModel: string) => {
-    setSavedGradingModel(chosenModel === model ? '' : chosenModel)
-    for (const documentId of documentIds) {
-      runner.start({ kind: 'evaluate', documentId, examId, model: chosenModel })
-    }
-  }
 
   const grade = useCallback(
     (evaluation: Evaluation, questionIds?: string[]) => {
       if (!gradingModel) {
-        notify('Choose a model first.')
+        notify('Choose a marking model first.')
         return
       }
       if (
@@ -509,6 +598,67 @@ export default function App() {
     },
     [runner, gradingModel, notify],
   )
+
+  /** Evaluate a paper, finish marking one that was stopped part way, or evaluate a marked one again. */
+  const evaluatePaper = async (examId: string, documentId: string, ask = true) => {
+    const problem = keyProblem(exams.find((exam) => exam.id === examId))
+    if (problem) {
+      notify(problem)
+      return
+    }
+    if (!gradingModel) {
+      notify('Choose a marking model first.')
+      return
+    }
+    const existing = evaluations.find(
+      (evaluation) => evaluation.document_id === documentId && evaluation.exam_id === examId,
+    )
+    if (existing && !existing.complete) {
+      try {
+        grade(details[existing.id] ?? (await api.getEvaluation(existing.id)))
+      } catch (error) {
+        notify(errorMessage(error))
+      }
+      return
+    }
+    if (
+      existing &&
+      ask &&
+      !window.confirm('Evaluate this paper again? Its marks are replaced, including any marks you changed.')
+    ) {
+      return
+    }
+    startEvaluation(examId, documentId, gradingModel)
+  }
+
+  const evaluateAll = (examId: string) => {
+    for (const document of papersOf(documents, examId)) {
+      const evaluation = evaluations.find(
+        (candidate) => candidate.document_id === document.id && candidate.exam_id === examId,
+      )
+      const state = paperState(document, runs.get(document.id), evaluation, jobs)
+      if (['idle', 'failed', 'partial'].includes(state.kind)) void evaluatePaper(examId, document.id, false)
+    }
+  }
+
+  const stopAll = (examId: string) => {
+    for (const document of documents.filter((candidate) => candidate.exam_id === examId)) runner.stop(document.id)
+  }
+
+  const deletePaper = async (document: DocumentInfo) => {
+    const marked = evaluations.some((evaluation) => evaluation.document_id === document.id)
+    if (!window.confirm(`Delete ${document.filename}${marked ? ' and its marks' : ''}?`)) return
+    queue.remove((job) => job.documentId === document.id)
+    runner.remove(document.id)
+    try {
+      await api.deleteDocument(document.id)
+    } catch (error) {
+      notify(`Could not delete ${document.filename}: ${errorMessage(error)}`)
+      return
+    }
+    updateDocuments((current) => current.filter((candidate) => candidate.id !== document.id))
+    setEvaluations((current) => current.filter((evaluation) => evaluation.document_id !== document.id))
+  }
 
   const changeAnswer = useCallback(
     async (evaluation: Evaluation, questionId: string, changes: { answer?: string; teacher_marks?: number | null }) => {
@@ -533,32 +683,184 @@ export default function App() {
     [storeEvaluation, notify],
   )
 
-  const deleteEvaluation = useCallback(
-    async (evaluation: Evaluation) => {
-      if (!window.confirm(`Delete the marks of ${evaluation.document_name} from ${evaluation.exam_name}?`)) return
-      try {
-        await api.deleteEvaluation(evaluation.id)
-      } catch (error) {
-        notify(`Could not delete the marks: ${errorMessage(error)}`)
-        return
-      }
-      runner.dismiss(evaluation.document_id)
-      setEvaluations((current) => current.filter((candidate) => candidate.id !== evaluation.id))
-    },
-    [runner, notify],
-  )
+  const deleteEvaluation = async (evaluation: Evaluation) => {
+    if (!window.confirm(`Delete the marks of ${evaluation.document_name}?`)) return
+    try {
+      await api.deleteEvaluation(evaluation.id)
+    } catch (error) {
+      notify(`Could not delete the marks: ${errorMessage(error)}`)
+      return
+    }
+    runner.dismiss(evaluation.document_id)
+    setEvaluations((current) => current.filter((candidate) => candidate.id !== evaluation.id))
+  }
 
-  const selectedDocument = documents.find((document) => document.id === selection?.documentId)
-  const selectedPage = selectedDocument?.pages.find((page) => page.number === selection?.pageNumber)
-  const selectedKey = selectedDocument && selectedPage ? pageKey(selectedDocument.id, selectedPage.number) : ''
+  // ---------- Page ----------
 
   useEffect(() => {
-    const title = mode === 'keys' ? selectedExam?.name : selectedDocument?.filename
+    const document = view.kind === 'document' ? documents.find((candidate) => candidate.id === view.documentId) : null
+    const title = document?.filename ?? summary?.name
     window.document.title = title ? `${title} · PaperEval` : 'PaperEval'
-  }, [mode, selectedExam, selectedDocument])
+  }, [view, documents, summary])
 
   const accepted = config?.accepted_extensions ?? ['.pdf', '.png', '.jpg', '.jpeg', '.webp', '.tif', '.tiff']
   const hasModels = offeredNames(groups).length > 0
+  const looseDocuments = documents.filter((document) => !document.exam_id)
+
+  const main = () => {
+    if (view.kind === 'home' || !summary) return <Welcome loading={loading} onCreate={() => void createEvaluator()} />
+    const examId = summary.id
+    const exam = examDetails[examId]
+    const keyDocument = documents.find((document) => document.id === summary.key_document_id)
+    const papers = papersOf(documents, examId)
+    const examEvaluations = evaluations.filter((evaluation) => evaluation.exam_id === examId)
+
+    if (view.kind === 'document') {
+      const document = documents.find((candidate) => candidate.id === view.documentId)
+      const page = document?.pages.find((candidate) => candidate.number === view.pageNumber) ?? document?.pages[0]
+      if (!document || !page) return null
+      const isPaper = document.role === 'script'
+      const key = pageKey(document.id, page.number)
+      const back: View = { kind: 'evaluator', examId, tab: isPaper ? 'papers' : 'key' }
+      return (
+        <Workspace
+          document={document}
+          page={page}
+          job={jobs.get(key)}
+          model={model}
+          panel={panel}
+          onPanelChange={setPanel}
+          backLabel={isPaper ? 'Answer papers' : 'Questions & key'}
+          onBack={() => navigate(back)}
+          marks={
+            isPaper ? (
+              <EvaluationPanel
+                key={document.id}
+                document={document}
+                summaries={examEvaluations.filter((evaluation) => evaluation.document_id === document.id)}
+                details={details}
+                run={runs.get(document.id)}
+                jobs={jobs}
+                exams={exams}
+                examDetails={examDetails}
+                preview={answerPreview}
+                onPreviewChange={setAnswerPreview}
+                gradingModel={gradingModel}
+                onLoadEvaluation={loadEvaluation}
+                onLoadExam={loadExam}
+                onEvaluate={() => void evaluatePaper(examId, document.id)}
+                onStop={() => runner.stop(document.id)}
+                onDismissRun={() => runner.dismiss(document.id)}
+                onGrade={grade}
+                onChangeAnswer={changeAnswer}
+                onChangeStudent={changeStudent}
+                onDelete={(evaluation) => void deleteEvaluation(evaluation)}
+                onSelectPage={(pageNumber) => navigate({ ...view, pageNumber })}
+                onOpenKey={() => navigate({ kind: 'evaluator', examId, tab: 'key' })}
+              />
+            ) : null
+          }
+          onSelectPage={(pageNumber) => navigate({ ...view, pageNumber })}
+          onExtract={() => {
+            if (!model) notify('Choose a reading model at the top first.')
+            else queue.enqueue({ documentId: document.id, pageNumber: page.number, model, prompt })
+          }}
+          onStop={() => queue.cancel(key)}
+          onDismiss={() => queue.dismiss(key)}
+          onError={notify}
+        />
+      )
+    }
+
+    const tab = view.tab
+    const uploadingHere = upload?.examId === examId
+    const problem = keyProblem(summary)
+    const marked = examEvaluations.filter((evaluation) => evaluation.complete).length
+    return (
+      <EvaluatorView
+        key={examId}
+        summary={summary}
+        exam={exam}
+        tab={tab}
+        onTabChange={(next) => navigate({ kind: 'evaluator', examId, tab: next })}
+        paperCount={papers.length}
+        markedCount={marked}
+        gradingModel={gradingModel}
+        onGradingModelChange={setSavedGradingModel}
+        models={allModels}
+        addedModels={extraModels}
+        onSaved={examSaved}
+        onDelete={() => void deleteEvaluator(summary)}
+        onDirtyChange={setEditorDirty}
+        onError={notify}
+      >
+        {(draft, change, dirty) =>
+          tab === 'key' ? (
+            <KeyStep
+              keyDocument={keyDocument}
+              looseDocuments={looseDocuments}
+              keyRead={keyReads[examId]}
+              jobs={jobs}
+              ocrModel={model}
+              gradingModel={gradingModel}
+              accept={accepted}
+              uploading={uploadingHere && upload?.role === 'key'}
+              questions={draft.questions}
+              onQuestionsChange={(questions) => change({ questions })}
+              onUploadKey={(files) => uploadKey(examId, files)}
+              onUseDocument={(documentId) => void assignEarlierFile(examId, documentId, 'key')}
+              onReadKey={(extractAll) => keyDocument && void readKey(examId, keyDocument.id, extractAll)}
+              onCancelKeyRead={() => keyControllers.current.get(examId)?.abort()}
+              onDismissKeyRead={() => forgetKeyRead(examId)}
+              onViewKeyPages={() =>
+                keyDocument && navigate({ kind: 'document', examId, documentId: keyDocument.id, pageNumber: 1 })
+              }
+              onImportJson={(file) => void importJson(examId, file)}
+            />
+          ) : tab === 'papers' ? (
+            <PapersStep
+              papers={papers}
+              looseDocuments={looseDocuments}
+              evaluations={examEvaluations}
+              runs={runs}
+              jobs={jobs}
+              keyProblem={
+                isKeyReading(keyReads[examId]) ? 'The questions are still being read from the key file.' : problem
+              }
+              accept={accepted}
+              uploading={uploadingHere && upload?.role === 'script'}
+              onUploadPapers={(files) => uploadPapers(examId, files)}
+              onUseDocument={(documentId) => void assignEarlierFile(examId, documentId, 'script')}
+              onEvaluate={(documentId) => void evaluatePaper(examId, documentId)}
+              onEvaluateAll={() => evaluateAll(examId)}
+              onStop={(documentId) => runner.stop(documentId)}
+              onStopAll={() => stopAll(examId)}
+              onOpenPaper={(documentId) => {
+                setPanel('marks')
+                navigate({ kind: 'document', examId, documentId, pageNumber: 1 })
+              }}
+              onDeletePaper={(document) => void deletePaper(document)}
+              onGoToKey={() => navigate({ kind: 'evaluator', examId, tab: 'key' })}
+            />
+          ) : exam ? (
+            <ResultsStep
+              exam={exam}
+              evaluations={examEvaluations}
+              active={papers.filter((document) => isRunning(runs.get(document.id))).map((document) => document.id)}
+              documents={papers}
+              onOpenPaper={(documentId) => {
+                setPanel('marks')
+                navigate({ kind: 'document', examId, documentId, pageNumber: 1 })
+              }}
+              onStopRuns={(documentIds) => documentIds.forEach((documentId) => runner.stop(documentId))}
+              onError={notify}
+              unsaved={dirty}
+            />
+          ) : null
+        }
+      </EvaluatorView>
+    )
+  }
 
   return (
     <div className="app">
@@ -610,130 +912,21 @@ export default function App() {
       )}
 
       <div className="main">
-        <Sidebar mode={mode} onModeChange={changeMode} paperCount={documents.length} keyCount={exams.length}>
-          {mode === 'papers' ? (
-            <PaperList
-              documents={documents}
-              loading={loadingDocuments}
-              jobs={jobs}
-              evaluations={evaluations}
-              runs={runs}
-              selection={selection}
-              upload={upload}
-              acceptedExtensions={accepted}
-              maxUploadMb={config?.max_upload_mb ?? 50}
-              onUpload={uploadFiles}
-              onSelect={selectPage}
-              onExtract={extractPage}
-              onStop={stopPage}
-              onExtractAll={extractAll}
-              onStopAll={stopAll}
-              onDownload={downloadDocument}
-              onDelete={deleteDocument}
-              onOpenMarks={openMarks}
-            />
-          ) : (
-            <ExamList
-              exams={exams}
-              loading={loadingExams}
-              evaluations={evaluations}
-              selectedId={selectedExam?.id ?? null}
-              onSelect={selectExam}
-              onCreate={() => void createExam()}
-              onFromDocument={() => setKeyFromDocumentOpen(true)}
-              onImport={(file) => void importExam(file)}
-            />
-          )}
-        </Sidebar>
-        <main className="content">
-          {mode === 'keys' ? (
-            selectedExam ? (
-              <ExamEditor
-                key={selectedExam.id}
-                examId={selectedExam.id}
-                evaluations={evaluations.filter((evaluation) => evaluation.exam_id === selectedExam.id)}
-                runs={runs}
-                documents={documents}
-                onSaved={examSaved}
-                onDelete={(exam) => void deleteExam(exam)}
-                onOpenPaper={openPaper}
-                onEvaluatePapers={() =>
-                  setEvaluateTarget({
-                    documentIds: documents
-                      .filter(
-                        (document) =>
-                          !evaluations.some(
-                            (evaluation) =>
-                              evaluation.document_id === document.id && evaluation.exam_id === selectedExam.id,
-                          ),
-                      )
-                      .map((document) => document.id),
-                    examId: selectedExam.id,
-                    choosePapers: true,
-                  })
-                }
-                onStopRuns={(documentIds) => documentIds.forEach((documentId) => runner.stop(documentId))}
-                onDirtyChange={setEditorDirty}
-                onError={notify}
-              />
-            ) : (
-              <ExamsEmptyState
-                loading={loadingExams}
-                onCreate={() => void createExam()}
-                onFromDocument={() => setKeyFromDocumentOpen(true)}
-              />
-            )
-          ) : selectedDocument && selectedPage ? (
-            <Workspace
-              document={selectedDocument}
-              page={selectedPage}
-              job={jobs.get(selectedKey)}
-              model={model}
-              panel={panel}
-              onPanelChange={setPanel}
-              marks={
-                <EvaluationPanel
-                  key={selectedDocument.id}
-                  document={selectedDocument}
-                  summaries={evaluations.filter((evaluation) => evaluation.document_id === selectedDocument.id)}
-                  details={details}
-                  run={runs.get(selectedDocument.id)}
-                  jobs={jobs}
-                  exams={exams}
-                  examDetails={examDetails}
-                  preview={answerPreview}
-                  onPreviewChange={setAnswerPreview}
-                  gradingModel={gradingModel}
-                  onLoadEvaluation={loadEvaluation}
-                  onLoadExam={loadExam}
-                  onEvaluate={(examId) =>
-                    setEvaluateTarget({ documentIds: [selectedDocument.id], examId, choosePapers: false })
-                  }
-                  onStop={() => runner.stop(selectedDocument.id)}
-                  onDismissRun={() => runner.dismiss(selectedDocument.id)}
-                  onGrade={grade}
-                  onChangeAnswer={changeAnswer}
-                  onChangeStudent={changeStudent}
-                  onDelete={(evaluation) => void deleteEvaluation(evaluation)}
-                  onSelectPage={(pageNumber) => selectPage(selectedDocument.id, pageNumber)}
-                  onOpenKey={openKey}
-                />
-              }
-              onSelectPage={(pageNumber) => selectPage(selectedDocument.id, pageNumber)}
-              onExtract={() => extract(selectedDocument.id, selectedPage.number)}
-              onStop={() => queue.cancel(selectedKey)}
-              onDismiss={() => queue.dismiss(selectedKey)}
-              onError={notify}
-            />
-          ) : (
-            <EmptyState
-              hasDocuments={documents.length > 0}
-              accept={accepted}
-              busy={upload !== null}
-              onUpload={uploadFiles}
-            />
-          )}
-        </main>
+        <EvaluatorList
+          exams={exams}
+          loading={loading}
+          documents={documents}
+          evaluations={evaluations}
+          runs={runs}
+          keyReads={keyReads}
+          selectedId={currentExamId}
+          onSelect={(examId) => {
+            const questions = exams.find((exam) => exam.id === examId)?.question_count ?? 0
+            navigate({ kind: 'evaluator', examId, tab: questions > 0 ? 'papers' : 'key' })
+          }}
+          onCreate={() => void createEvaluator()}
+        />
+        <main className="content">{main()}</main>
       </div>
 
       <SettingsDialog
@@ -749,49 +942,17 @@ export default function App() {
         onRemoveModel={removeModel}
       />
 
-      <EvaluateDialog
-        target={evaluateTarget}
-        onClose={() => setEvaluateTarget(null)}
-        documents={documents}
-        exams={exams}
-        evaluations={evaluations}
-        model={gradingModel}
-        onModelChange={setSavedGradingModel}
-        models={allModels}
-        addedModels={extraModels}
-        ocrModel={model}
-        onStart={startEvaluations}
-        onCreateKey={() => {
-          setEvaluateTarget(null)
-          void createExam()
-        }}
-      />
-
-      <KeyFromDocumentDialog
-        open={keyFromDocumentOpen}
-        onClose={() => setKeyFromDocumentOpen(false)}
-        documents={documents}
-        model={gradingModel}
-        onModelChange={setSavedGradingModel}
-        models={allModels}
-        addedModels={extraModels}
-        ocrModel={model}
-        acceptedExtensions={accepted}
-        uploading={upload !== null}
-        onUpload={uploadFiles}
-        prepare={prepareDocument}
-        jobs={jobs}
-        onCreated={(exam) => {
-          addExam(exam)
-          notify(`Read ${pluralize(exam.questions.length, 'question')}. Check them, and set any missing marks.`, 'info')
-        }}
-      />
-
       {dragging && (
         <div className="drop-overlay" aria-hidden>
           <div className="drop-overlay-inner">
             <FileUp size={40} strokeWidth={1.5} />
-            <p>Drop PDFs or images to upload</p>
+            <p>
+              {view.kind === 'evaluator' && view.tab === 'key'
+                ? 'Drop the question paper with its answer key'
+                : view.kind === 'home'
+                  ? 'Create an evaluator first'
+                  : 'Drop the answer papers to mark them'}
+            </p>
           </div>
         </div>
       )}

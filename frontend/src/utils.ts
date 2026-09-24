@@ -22,11 +22,9 @@ export function pluralize(count: number, word: string): string {
   return `${count} ${word}${count === 1 ? '' : 's'}`
 }
 
-/** All extracted text of a document, page by page. */
+/** The text the model reads: every page's text, with the same page markers the backend adds. */
 export function documentText(document: DocumentInfo): string {
-  return document.pages
-    .map((page) => `--- Page ${page.number} ---\n\n${page.ocr ? page.ocr.text : '(not extracted)'}`)
-    .join('\n\n')
+  return document.pages.map((page) => `=== Page ${page.number} ===\n${page.ocr?.text.trim() ?? ''}`).join('\n\n')
 }
 
 /** A file name without the characters Windows does not allow in one. */

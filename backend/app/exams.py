@@ -1,6 +1,8 @@
-"""Answer keys: an exam's questions, each with its model answer, marking key and marks.
+"""Evaluators: an exam's questions, each with its model answer, marking key and marks.
 
-Each answer key is stored as ``<data_dir>/exams/<id>.json``.
+An evaluator (called an exam here) also has the file its questions were read
+from, and the students' answer papers marked against it; those documents point
+to it. Each is stored as ``<data_dir>/exams/<id>.json``.
 """
 
 from __future__ import annotations
@@ -34,12 +36,18 @@ class Question(BaseModel):
     max_marks: float = Field(default=0, ge=0, le=1000)
 
 
+# The name of an evaluator that has not been named yet.
+PLACEHOLDER_NAMES = frozenset({"", "Untitled evaluator", "Untitled answer key"})
+
+
 class Exam(BaseModel):
     id: str
     name: str
     created_at: datetime
     updated_at: datetime
     questions: list[Question]
+    # The uploaded question paper with its answers and marking scheme.
+    key_document_id: str | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -89,6 +97,13 @@ class ExamStore:
         with self._lock:
             exam = self.get(exam_id)
             exam = exam.model_copy(update={"name": name, "questions": _unique_ids(questions), "updated_at": utc_now()})
+            write_json_atomic(self._path(exam_id), exam)
+        return exam
+
+    def set_key_document(self, exam_id: str, document_id: str | None) -> Exam:
+        with self._lock:
+            exam = self.get(exam_id)
+            exam = exam.model_copy(update={"key_document_id": document_id, "updated_at": utc_now()})
             write_json_atomic(self._path(exam_id), exam)
         return exam
 
