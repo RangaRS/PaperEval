@@ -55,6 +55,8 @@ class ExamSummary(BaseModel):
     updated_at: datetime
     question_count: int
     total_marks: float
+    # Questions that have no marks yet, which must be set before scripts can be evaluated.
+    unmarked_questions: list[str]
 
 
 class ExamFromDocumentRequest(BaseModel):
@@ -121,6 +123,7 @@ def list_exams(exams: ExamStoreDep) -> list[ExamSummary]:
             updated_at=exam.updated_at,
             question_count=len(exam.questions),
             total_marks=exam.total_marks,
+            unmarked_questions=_unmarked_questions(exam),
         )
         for exam in exams.list_exams()
     ]
@@ -244,11 +247,7 @@ async def evaluate_document(
     exam = _load_exam(exams, body.exam_id)
     if not exam.questions:
         raise HTTPException(422, "The answer key has no questions.")
-    unmarked = [
-        label
-        for label, question in zip(question_labels(exam.questions), exam.questions, strict=True)
-        if question.max_marks <= 0
-    ]
+    unmarked = _unmarked_questions(exam)
     if unmarked:
         raise HTTPException(422, f"Set the marks for {_join(unmarked)} in the answer key first.")
     _require_text(document)
@@ -379,6 +378,11 @@ def _load_evaluation(evaluations: EvaluationStore, evaluation_id: str) -> Evalua
         return evaluations.get(evaluation_id)
     except EvaluationNotFoundError:
         raise HTTPException(404, "Evaluation not found.") from None
+
+
+def _unmarked_questions(exam: Exam) -> list[str]:
+    labels = question_labels(exam.questions)
+    return [label for label, question in zip(labels, exam.questions, strict=True) if question.max_marks <= 0]
 
 
 def _require_text(document: StoredDocument) -> None:

@@ -57,7 +57,8 @@ function setup(concurrency = 1) {
   const onResult = vi.fn()
   const queue = new OcrQueue({ run: runner.run, onResult, concurrency })
   const job = (pageNumber: number) => queue.getSnapshot().get(pageKey('doc', pageNumber))
-  const enqueue = (pageNumber: number) => queue.enqueue({ documentId: 'doc', pageNumber, model: 'llava', prompt: 'Read it' })
+  const enqueue = (pageNumber: number) =>
+    queue.enqueue({ documentId: 'doc', pageNumber, model: 'llava', prompt: 'Read it' })
   return { queue, runner, onResult, job, enqueue }
 }
 
@@ -229,5 +230,34 @@ describe('OcrQueue', () => {
 
     expect(job(1)).toBeUndefined()
     expect(job(2)).toBeUndefined()
+  })
+
+  it('tells when a set of jobs has finished', async () => {
+    const { queue, runner, enqueue } = setup()
+    enqueue(1)
+    enqueue(2)
+    let settled = false
+    const waiting = queue.settled(['doc/1', 'doc/2']).then(() => (settled = true))
+    await flush()
+
+    runner.stream('doc/1').push({ type: 'done', result: result('One') })
+    await flush()
+    expect(settled).toBe(false)
+
+    runner.stream('doc/2').push({ type: 'error', message: 'Nope' })
+    await waiting
+    expect(settled).toBe(true)
+    await expect(queue.settled(['doc/1', 'doc/9'])).resolves.toBeUndefined()
+  })
+
+  it('stops waiting for jobs when asked to', async () => {
+    const { queue, enqueue } = setup()
+    enqueue(1)
+    const controller = new AbortController()
+    const waiting = queue.settled(['doc/1'], controller.signal)
+
+    controller.abort()
+
+    await expect(waiting).rejects.toThrow()
   })
 })

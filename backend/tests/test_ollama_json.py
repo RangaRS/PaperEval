@@ -74,3 +74,13 @@ def test_http_errors_name_the_model() -> None:
     with pytest.raises(OllamaError, match="Model 'nope' was not found") as error:
         ask(fake, model="nope")
     assert error.value.status_code == 404
+
+
+def test_a_model_outside_the_plan_says_so() -> None:
+    fake = FakeOllama()
+    fake.chat_status = 402
+    fake.chat_error = {"error": "this model is not included in your free usage"}
+
+    with pytest.raises(OllamaError, match=r"Your Ollama plan does not include gemma4:31b-cloud \(HTTP 402") as error:
+        ask(fake, model="gemma4:31b-cloud")
+    assert error.value.status_code == 402

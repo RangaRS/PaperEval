@@ -1,28 +1,63 @@
 import { CloudOff, FileUp, RefreshCw, TriangleAlert } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 
-import { api, type AppConfig, type DocumentInfo, type OllamaStatus } from './api'
+import {
+  api,
+  type AppConfig,
+  type DocumentInfo,
+  type Evaluation,
+  type EvaluationSummary,
+  type Exam,
+  type ExamSummary,
+  type OllamaStatus,
+} from './api'
 import { EmptyState } from './components/EmptyState'
+import { EvaluateDialog, type EvaluateTarget } from './components/EvaluateDialog'
+import { EvaluationPanel } from './components/EvaluationPanel'
+import { ExamEditor } from './components/ExamEditor'
+import { ExamList, ExamsEmptyState } from './components/ExamList'
 import { Header } from './components/Header'
+import { KeyFromDocumentDialog } from './components/KeyFromDocumentDialog'
 import { SettingsDialog } from './components/SettingsDialog'
-import { Sidebar, type Selection, type UploadProgress } from './components/Sidebar'
+import { PaperList, Sidebar, type Selection, type SidebarMode, type UploadProgress } from './components/Sidebar'
 import { Toasts } from './components/Toasts'
-import { Workspace } from './components/Workspace'
-import { isString, isStringArray, useFileDrop, useLocalStorage, useToasts } from './hooks'
+import { Workspace, type WorkspacePanel } from './components/Workspace'
+import { EvaluationRunner } from './evaluationRunner'
+import { blankQuestion, joinList, parseAnswerKey, questionLabel, summarize, withSummary } from './exams'
+import { isBoolean, isString, isStringArray, useFileDrop, useLocalStorage, useToasts } from './hooks'
 import { chooseModel, modelGroups, offeredNames } from './models'
 import { OcrQueue, pageKey } from './ocrQueue'
-import { documentText, downloadText, errorMessage, fileStem } from './utils'
+import { documentText, downloadText, errorMessage, fileStem, pluralize } from './utils'
 
 const MB = 1024 * 1024
 const isPrompt = (value: unknown): value is string | null => value === null || typeof value === 'string'
+const isMode = (value: unknown): value is SidebarMode => value === 'papers' || value === 'keys'
+const isPanel = (value: unknown): value is WorkspacePanel => value === 'text' || value === 'marks'
 
-function withPageText(documents: DocumentInfo[], documentId: string, pageNumber: number, ocr: DocumentInfo['pages'][number]['ocr']) {
+function withPageText(
+  documents: DocumentInfo[],
+  documentId: string,
+  pageNumber: number,
+  ocr: DocumentInfo['pages'][number]['ocr'],
+) {
   return documents.map((document) =>
     document.id !== documentId
       ? document
       : { ...document, pages: document.pages.map((page) => (page.number === pageNumber ? { ...page, ocr } : page)) },
   )
 }
+
+const examSummary = (exam: Exam): ExamSummary => ({
+  id: exam.id,
+  name: exam.name,
+  created_at: exam.created_at,
+  updated_at: exam.updated_at,
+  question_count: exam.questions.length,
+  total_marks: exam.total_marks,
+  unmarked_questions: exam.questions.flatMap((question, index) =>
+    question.max_marks <= 0 ? [questionLabel(question.number, index)] : [],
+  ),
+})
 
 export default function App() {
   const [config, setConfig] = useState<AppConfig | null>(null)
@@ -39,6 +74,21 @@ export default function App() {
   const [customPrompt, setCustomPrompt] = useLocalStorage<string | null>('papereval.prompt', null, isPrompt)
   const { toasts, notify, dismiss: dismissToast } = useToasts()
 
+  const [mode, setMode] = useLocalStorage<SidebarMode>('papereval.mode', 'papers', isMode)
+  const [panel, setPanel] = useLocalStorage<WorkspacePanel>('papereval.panel', 'text', isPanel)
+  const [answerPreview, setAnswerPreview] = useLocalStorage('papereval.answerPreview', true, isBoolean)
+  const [savedGradingModel, setSavedGradingModel] = useLocalStorage('papereval.gradingModel', '', isString)
+  const [exams, setExams] = useState<ExamSummary[]>([])
+  const [loadingExams, setLoadingExams] = useState(true)
+  const [chosenExamId, setChosenExamId] = useState<string | null>(null)
+  const [evaluations, setEvaluations] = useState<EvaluationSummary[]>([])
+  const [details, setDetails] = useState<Record<string, Evaluation>>({})
+  const [examDetails, setExamDetails] = useState<Record<string, Exam>>({})
+  const [evaluateTarget, setEvaluateTarget] = useState<EvaluateTarget | null>(null)
+  const [keyFromDocumentOpen, setKeyFromDocumentOpen] = useState(false)
+  // Whether the answer key being edited has unsaved changes.
+  const editorDirty = useRef(false)
+
   const [queue] = useState(
     () =>
       new OcrQueue({
@@ -50,6 +100,26 @@ export default function App() {
   )
   const jobs = useSyncExternalStore(queue.subscribe, queue.getSnapshot)
   useEffect(() => () => queue.cancelAll(() => true), [queue])
+
+  const storeEvaluation = useCallback((evaluation: Evaluation) => {
+    setDetails((current) => ({ ...current, [evaluation.id]: evaluation }))
+    setEvaluations((current) => withSummary(current, summarize(evaluation)))
+  }, [])
+
+  const [runner] = useState(
+    () =>
+      new EvaluationRunner({
+        // Replaced by prepareDocument once it is defined.
+        prepare: () => Promise.resolve(),
+        evaluate: (request, signal) =>
+          api.evaluate(request.documentId, { exam_id: request.examId, model: request.model }, signal),
+        grade: (request, signal) =>
+          api.grade(request.evaluation.id, { model: request.model, question_ids: request.questionIds }, signal),
+        onEvaluation: storeEvaluation,
+      }),
+  )
+  const runs = useSyncExternalStore(runner.subscribe, runner.getSnapshot)
+  useEffect(() => () => runner.stopAll(), [runner])
 
   useEffect(() => {
     api
@@ -64,6 +134,15 @@ export default function App() {
       })
       .catch((error) => notify(errorMessage(error)))
       .finally(() => setLoadingDocuments(false))
+    api
+      .listExams()
+      .then(setExams)
+      .catch((error) => notify(`Could not load the answer keys: ${errorMessage(error)}`))
+      .finally(() => setLoadingExams(false))
+    api
+      .listEvaluations()
+      .then(setEvaluations)
+      .catch((error) => notify(`Could not load the marks: ${errorMessage(error)}`))
   }, [notify])
 
   const lastCheck = useRef(0)
@@ -110,6 +189,46 @@ export default function App() {
   const model = chooseModel(savedModel, configuredModel, groups, (status?.models.length ?? 0) > 0)
   const prompt = customPrompt ?? config?.default_prompt ?? ''
   const setPrompt = (value: string) => setCustomPrompt(value === config?.default_prompt ? null : value)
+  // Marking needs no images, so any model will do; it defaults to the one that reads the pages.
+  const gradingModel = savedGradingModel || model
+  const allModels = status?.models ?? []
+  const extraModels = useMemo(() => [...addedModels, configuredModel].filter(Boolean), [addedModels, configuredModel])
+
+  const documentsRef = useRef(documents)
+  useEffect(() => {
+    documentsRef.current = documents
+  }, [documents])
+
+  /** Extract the text of a paper's pages that have none, as needed before it is evaluated. */
+  const prepareDocument = useCallback(
+    async (documentId: string, signal: AbortSignal) => {
+      const document = documentsRef.current.find((candidate) => candidate.id === documentId)
+      if (!document) throw new Error('The paper was deleted.')
+      const missing = document.pages.filter((page) => !page.ocr).map((page) => page.number)
+      if (missing.length === 0) return
+      if (!model) throw new Error('Some pages have no text yet. Choose a vision model at the top to read them.')
+      for (const pageNumber of missing) queue.enqueue({ documentId, pageNumber, model, prompt })
+      const keys = missing.map((pageNumber) => pageKey(documentId, pageNumber))
+      const stop = () => queue.cancelAll((job) => keys.includes(job.key))
+      signal.addEventListener('abort', stop)
+      try {
+        await queue.settled(keys, signal)
+      } finally {
+        signal.removeEventListener('abort', stop)
+      }
+      const failed = missing.filter(
+        (pageNumber) => queue.getSnapshot().get(pageKey(documentId, pageNumber))?.status !== 'done',
+      )
+      if (failed.length > 0) {
+        const pages = failed.length === 1 ? 'page' : 'pages'
+        throw new Error(
+          `The text of ${pages} ${joinList(failed.map(String))} could not be extracted. See the ${pages} for why.`,
+        )
+      }
+    },
+    [queue, model, prompt],
+  )
+  useEffect(() => runner.setPrepare(prepareDocument), [runner, prepareDocument])
 
   const openSettings = (focusModels = false) => {
     setFocusModelInput(focusModels)
@@ -123,6 +242,20 @@ export default function App() {
   }
 
   const removeModel = (name: string) => setAddedModels((current) => current.filter((added) => added !== name))
+
+  /** Whether it is fine to leave the answer key being edited. */
+  const canLeaveEditor = useCallback(
+    () => !editorDirty.current || window.confirm('Discard the unsaved changes to this answer key?'),
+    [],
+  )
+  const setEditorDirty = useCallback((dirty: boolean) => {
+    editorDirty.current = dirty
+  }, [])
+
+  const changeMode = (next: SidebarMode) => {
+    if (next === mode || (mode === 'keys' && !canLeaveEditor())) return
+    setMode(next)
+  }
 
   const selectPage = useCallback(
     (documentId: string, pageNumber: number) => setSelection({ documentId, pageNumber }),
@@ -178,8 +311,11 @@ export default function App() {
 
   const deleteDocument = useCallback(
     async (document: DocumentInfo) => {
-      if (!window.confirm(`Delete "${document.filename}" and its extracted text?`)) return
+      const marked = evaluations.some((evaluation) => evaluation.document_id === document.id)
+      const what = marked ? 'its extracted text and marks' : 'its extracted text'
+      if (!window.confirm(`Delete "${document.filename}" and ${what}?`)) return
       queue.remove((job) => job.documentId === document.id)
+      runner.remove(document.id)
       try {
         await api.deleteDocument(document.id)
       } catch (error) {
@@ -188,6 +324,7 @@ export default function App() {
       }
       const remaining = documents.filter((candidate) => candidate.id !== document.id)
       setDocuments((current) => current.filter((candidate) => candidate.id !== document.id))
+      setEvaluations((current) => current.filter((evaluation) => evaluation.document_id !== document.id))
       setSelection((current) =>
         current?.documentId !== document.id
           ? current
@@ -196,7 +333,17 @@ export default function App() {
             : null,
       )
     },
-    [queue, notify, documents],
+    [queue, runner, notify, documents, evaluations],
+  )
+
+  const openMarks = useCallback(
+    (document: DocumentInfo) => {
+      setSelection((current) =>
+        current?.documentId === document.id ? current : { documentId: document.id, pageNumber: 1 },
+      )
+      setPanel('marks')
+    },
+    [setPanel],
   )
 
   // Uploads run one after another, even when more files are dropped during an upload.
@@ -226,13 +373,186 @@ export default function App() {
   )
   const dragging = useFileDrop(uploadFiles)
 
+  // ---------- Answer keys ----------
+
+  const selectedExam = exams.find((exam) => exam.id === chosenExamId) ?? exams[0]
+
+  const selectExam = (examId: string) => {
+    if (examId === selectedExam?.id || !canLeaveEditor()) return
+    setChosenExamId(examId)
+  }
+
+  const addExam = (exam: Exam) => {
+    setExams((current) => [examSummary(exam), ...current.filter((candidate) => candidate.id !== exam.id)])
+    setExamDetails((current) => ({ ...current, [exam.id]: exam }))
+    setChosenExamId(exam.id)
+    setMode('keys')
+  }
+
+  const createExam = async () => {
+    if (mode === 'keys' && !canLeaveEditor()) return
+    try {
+      addExam(await api.createExam({ name: 'Untitled answer key', questions: [blankQuestion([])] }))
+    } catch (error) {
+      notify(`Could not create an answer key: ${errorMessage(error)}`)
+    }
+  }
+
+  const importExam = async (file: File) => {
+    if (mode === 'keys' && !canLeaveEditor()) return
+    try {
+      const draft = parseAnswerKey(await file.text(), fileStem(file.name))
+      const exam = await api.createExam(draft)
+      addExam(exam)
+      notify(`Imported ${exam.name} with ${pluralize(exam.questions.length, 'question')}.`, 'info')
+    } catch (error) {
+      notify(`Could not import ${file.name}: ${errorMessage(error)}`)
+    }
+  }
+
+  const examSaved = useCallback((exam: Exam) => {
+    setExams((current) => current.map((candidate) => (candidate.id === exam.id ? examSummary(exam) : candidate)))
+    setExamDetails((current) => ({ ...current, [exam.id]: exam }))
+  }, [])
+
+  const deleteExam = async (exam: Exam) => {
+    const marked = evaluations.filter((evaluation) => evaluation.exam_id === exam.id).length
+    const warning =
+      marked > 0 ? ` The marks of the ${pluralize(marked, 'paper')} evaluated with it are deleted too.` : ''
+    if (!window.confirm(`Delete the answer key "${exam.name}"?${warning}`)) return
+    try {
+      await api.deleteExam(exam.id)
+    } catch (error) {
+      notify(`Could not delete ${exam.name}: ${errorMessage(error)}`)
+      return
+    }
+    editorDirty.current = false
+    setExams((current) => current.filter((candidate) => candidate.id !== exam.id))
+    setEvaluations((current) => current.filter((evaluation) => evaluation.exam_id !== exam.id))
+    setChosenExamId(null)
+  }
+
+  const openPaper = useCallback(
+    (documentId: string) => {
+      if (!canLeaveEditor()) return
+      setMode('papers')
+      setSelection((current) => (current?.documentId === documentId ? current : { documentId, pageNumber: 1 }))
+      setPanel('marks')
+    },
+    [canLeaveEditor, setMode, setPanel],
+  )
+
+  const openKey = useCallback(
+    (examId: string) => {
+      setChosenExamId(examId)
+      setMode('keys')
+    },
+    [setMode],
+  )
+
+  // ---------- Evaluations ----------
+
+  const loading = useRef(new Set<string>())
+  const loadEvaluation = useCallback(
+    (evaluationId: string) => {
+      if (loading.current.has(evaluationId)) return
+      loading.current.add(evaluationId)
+      api
+        .getEvaluation(evaluationId)
+        .then((evaluation) => setDetails((current) => ({ ...current, [evaluation.id]: evaluation })))
+        .catch((error) => notify(`Could not load the marks: ${errorMessage(error)}`))
+        .finally(() => loading.current.delete(evaluationId))
+    },
+    [notify],
+  )
+
+  const loadExam = useCallback(
+    (examId: string) => {
+      if (loading.current.has(examId)) return
+      loading.current.add(examId)
+      api
+        .getExam(examId)
+        .then((exam) => setExamDetails((current) => ({ ...current, [exam.id]: exam })))
+        .catch((error) => notify(`Could not load the answer key: ${errorMessage(error)}`))
+        .finally(() => loading.current.delete(examId))
+    },
+    [notify],
+  )
+
+  const startEvaluations = (documentIds: string[], examId: string, chosenModel: string) => {
+    setSavedGradingModel(chosenModel === model ? '' : chosenModel)
+    for (const documentId of documentIds) {
+      runner.start({ kind: 'evaluate', documentId, examId, model: chosenModel })
+    }
+  }
+
+  const grade = useCallback(
+    (evaluation: Evaluation, questionIds?: string[]) => {
+      if (!gradingModel) {
+        notify('Choose a model first.')
+        return
+      }
+      if (
+        !runner.start({
+          kind: 'grade',
+          documentId: evaluation.document_id,
+          evaluation,
+          model: gradingModel,
+          questionIds,
+        })
+      ) {
+        notify('This paper is still being evaluated.')
+      }
+    },
+    [runner, gradingModel, notify],
+  )
+
+  const changeAnswer = useCallback(
+    async (evaluation: Evaluation, questionId: string, changes: { answer?: string; teacher_marks?: number | null }) => {
+      try {
+        storeEvaluation(await api.changeAnswer(evaluation.id, questionId, changes))
+        return true
+      } catch (error) {
+        notify(`Could not save: ${errorMessage(error)}`)
+        return false
+      }
+    },
+    [storeEvaluation, notify],
+  )
+
+  const changeStudent = useCallback(
+    (evaluation: Evaluation, changes: { student_name?: string; roll_number?: string }) => {
+      api
+        .changeEvaluation(evaluation.id, changes)
+        .then(storeEvaluation)
+        .catch((error) => notify(`Could not save: ${errorMessage(error)}`))
+    },
+    [storeEvaluation, notify],
+  )
+
+  const deleteEvaluation = useCallback(
+    async (evaluation: Evaluation) => {
+      if (!window.confirm(`Delete the marks of ${evaluation.document_name} from ${evaluation.exam_name}?`)) return
+      try {
+        await api.deleteEvaluation(evaluation.id)
+      } catch (error) {
+        notify(`Could not delete the marks: ${errorMessage(error)}`)
+        return
+      }
+      runner.dismiss(evaluation.document_id)
+      setEvaluations((current) => current.filter((candidate) => candidate.id !== evaluation.id))
+    },
+    [runner, notify],
+  )
+
   const selectedDocument = documents.find((document) => document.id === selection?.documentId)
   const selectedPage = selectedDocument?.pages.find((page) => page.number === selection?.pageNumber)
   const selectedKey = selectedDocument && selectedPage ? pageKey(selectedDocument.id, selectedPage.number) : ''
 
   useEffect(() => {
-    window.document.title = selectedDocument ? `${selectedDocument.filename} · PaperEval` : 'PaperEval'
-  }, [selectedDocument])
+    const title = mode === 'keys' ? selectedExam?.name : selectedDocument?.filename
+    window.document.title = title ? `${title} · PaperEval` : 'PaperEval'
+  }, [mode, selectedExam, selectedDocument])
 
   const accepted = config?.accepted_extensions ?? ['.pdf', '.png', '.jpg', '.jpeg', '.webp', '.tif', '.tiff']
   const hasModels = offeredNames(groups).length > 0
@@ -287,30 +607,114 @@ export default function App() {
       )}
 
       <div className="main">
-        <Sidebar
-          documents={documents}
-          loading={loadingDocuments}
-          jobs={jobs}
-          selection={selection}
-          upload={upload}
-          acceptedExtensions={accepted}
-          maxUploadMb={config?.max_upload_mb ?? 50}
-          onUpload={uploadFiles}
-          onSelect={selectPage}
-          onExtract={extractPage}
-          onStop={stopPage}
-          onExtractAll={extractAll}
-          onStopAll={stopAll}
-          onDownload={downloadDocument}
-          onDelete={deleteDocument}
-        />
+        <Sidebar mode={mode} onModeChange={changeMode} paperCount={documents.length} keyCount={exams.length}>
+          {mode === 'papers' ? (
+            <PaperList
+              documents={documents}
+              loading={loadingDocuments}
+              jobs={jobs}
+              evaluations={evaluations}
+              runs={runs}
+              selection={selection}
+              upload={upload}
+              acceptedExtensions={accepted}
+              maxUploadMb={config?.max_upload_mb ?? 50}
+              onUpload={uploadFiles}
+              onSelect={selectPage}
+              onExtract={extractPage}
+              onStop={stopPage}
+              onExtractAll={extractAll}
+              onStopAll={stopAll}
+              onDownload={downloadDocument}
+              onDelete={deleteDocument}
+              onOpenMarks={openMarks}
+            />
+          ) : (
+            <ExamList
+              exams={exams}
+              loading={loadingExams}
+              evaluations={evaluations}
+              selectedId={selectedExam?.id ?? null}
+              onSelect={selectExam}
+              onCreate={() => void createExam()}
+              onFromDocument={() => setKeyFromDocumentOpen(true)}
+              onImport={(file) => void importExam(file)}
+            />
+          )}
+        </Sidebar>
         <main className="content">
-          {selectedDocument && selectedPage ? (
+          {mode === 'keys' ? (
+            selectedExam ? (
+              <ExamEditor
+                key={selectedExam.id}
+                examId={selectedExam.id}
+                evaluations={evaluations.filter((evaluation) => evaluation.exam_id === selectedExam.id)}
+                runs={runs}
+                documents={documents}
+                onSaved={examSaved}
+                onDelete={(exam) => void deleteExam(exam)}
+                onOpenPaper={openPaper}
+                onEvaluatePapers={() =>
+                  setEvaluateTarget({
+                    documentIds: documents
+                      .filter(
+                        (document) =>
+                          !evaluations.some(
+                            (evaluation) =>
+                              evaluation.document_id === document.id && evaluation.exam_id === selectedExam.id,
+                          ),
+                      )
+                      .map((document) => document.id),
+                    examId: selectedExam.id,
+                    choosePapers: true,
+                  })
+                }
+                onStopRuns={(documentIds) => documentIds.forEach((documentId) => runner.stop(documentId))}
+                onDirtyChange={setEditorDirty}
+                onError={notify}
+              />
+            ) : (
+              <ExamsEmptyState
+                loading={loadingExams}
+                onCreate={() => void createExam()}
+                onFromDocument={() => setKeyFromDocumentOpen(true)}
+              />
+            )
+          ) : selectedDocument && selectedPage ? (
             <Workspace
               document={selectedDocument}
               page={selectedPage}
               job={jobs.get(selectedKey)}
               model={model}
+              panel={panel}
+              onPanelChange={setPanel}
+              marks={
+                <EvaluationPanel
+                  key={selectedDocument.id}
+                  document={selectedDocument}
+                  summaries={evaluations.filter((evaluation) => evaluation.document_id === selectedDocument.id)}
+                  details={details}
+                  run={runs.get(selectedDocument.id)}
+                  exams={exams}
+                  examDetails={examDetails}
+                  preview={answerPreview}
+                  onPreviewChange={setAnswerPreview}
+                  gradingModel={gradingModel}
+                  onLoadEvaluation={loadEvaluation}
+                  onLoadExam={loadExam}
+                  onEvaluate={(examId) =>
+                    setEvaluateTarget({ documentIds: [selectedDocument.id], examId, choosePapers: false })
+                  }
+                  onStop={() => runner.stop(selectedDocument.id)}
+                  onDismissRun={() => runner.dismiss(selectedDocument.id)}
+                  onGrade={grade}
+                  onChangeAnswer={changeAnswer}
+                  onChangeStudent={changeStudent}
+                  onDelete={(evaluation) => void deleteEvaluation(evaluation)}
+                  onSelectPage={(pageNumber) => selectPage(selectedDocument.id, pageNumber)}
+                  onOpenKey={openKey}
+                />
+              }
               onSelectPage={(pageNumber) => selectPage(selectedDocument.id, pageNumber)}
               onExtract={() => extract(selectedDocument.id, selectedPage.number)}
               onStop={() => queue.cancel(selectedKey)}
@@ -339,6 +743,43 @@ export default function App() {
         addedModels={addedModels}
         onAddModel={addModel}
         onRemoveModel={removeModel}
+      />
+
+      <EvaluateDialog
+        target={evaluateTarget}
+        onClose={() => setEvaluateTarget(null)}
+        documents={documents}
+        exams={exams}
+        evaluations={evaluations}
+        model={gradingModel}
+        onModelChange={setSavedGradingModel}
+        models={allModels}
+        addedModels={extraModels}
+        ocrModel={model}
+        onStart={startEvaluations}
+        onCreateKey={() => {
+          setEvaluateTarget(null)
+          void createExam()
+        }}
+      />
+
+      <KeyFromDocumentDialog
+        open={keyFromDocumentOpen}
+        onClose={() => setKeyFromDocumentOpen(false)}
+        documents={documents}
+        model={gradingModel}
+        onModelChange={setSavedGradingModel}
+        models={allModels}
+        addedModels={extraModels}
+        ocrModel={model}
+        acceptedExtensions={accepted}
+        uploading={upload !== null}
+        onUpload={uploadFiles}
+        prepare={prepareDocument}
+        onCreated={(exam) => {
+          addExam(exam)
+          notify(`Read ${pluralize(exam.questions.length, 'question')}. Check them, and set any missing marks.`, 'info')
+        }}
       />
 
       {dragging && (

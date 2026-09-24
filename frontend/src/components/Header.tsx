@@ -29,7 +29,7 @@ export function Header({
       <div className="brand">
         <img src="/favicon.svg" alt="" width={26} height={26} />
         <span className="brand-name">PaperEval</span>
-        <span className="brand-tagline">OCR with Ollama vision models</span>
+        <span className="brand-tagline">Read and mark answer scripts with Ollama models</span>
       </div>
       <div className="topbar-controls">
         <ConnectionBadge status={status} checking={checking} onRefresh={onRefresh} />

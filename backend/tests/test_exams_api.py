@@ -41,6 +41,7 @@ def test_answer_keys_can_be_created_changed_and_deleted(client: TestClient) -> N
     assert summary["id"] == exam["id"]
     assert summary["question_count"] == 2
     assert summary["total_marks"] == 5
+    assert summary["unmarked_questions"] == []
 
     first = {**exam["questions"][0], "max_marks": 4}
     updated = client.put(f"/api/exams/{exam['id']}", json={"name": "Unit test 2", "questions": [first]})
@@ -75,6 +76,9 @@ def test_every_question_gets_an_id_of_its_own(client: TestClient) -> None:
     assert ids[0] == "same"
     assert len(set(ids)) == 3
     assert exam["name"] == "Untitled answer key"
+    # Scripts can only be evaluated once every question has marks.
+    (summary,) = client.get("/api/exams").json()
+    assert summary["unmarked_questions"] == ["Q1", "Q2", "Q3"]
 
 
 def test_invalid_answer_keys_are_refused(client: TestClient) -> None:

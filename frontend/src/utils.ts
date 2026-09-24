@@ -29,13 +29,22 @@ export function documentText(document: DocumentInfo): string {
     .join('\n\n')
 }
 
-export function downloadText(filename: string, text: string): void {
-  const url = URL.createObjectURL(new Blob([text], { type: 'text/plain;charset=utf-8' }))
+/** A file name without the characters Windows does not allow in one. */
+export function safeFilename(name: string): string {
+  return name.replace(/[\\/:*?"<>|]+/g, '-').trim() || 'download'
+}
+
+export function downloadBlob(filename: string, blob: Blob): void {
+  const url = URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
-  link.download = filename
+  link.download = safeFilename(filename)
   link.click()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+export function downloadText(filename: string, text: string, type = 'text/plain'): void {
+  downloadBlob(filename, new Blob([text], { type: `${type};charset=utf-8` }))
 }
 
 export async function copyText(text: string): Promise<void> {

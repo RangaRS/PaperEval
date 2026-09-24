@@ -1,10 +1,66 @@
-import { ChevronDown, FileDown, FileText, Image as ImageIcon, LoaderCircle, ScanText, Square, Trash2, Upload } from 'lucide-react'
-import { memo, useRef, useState } from 'react'
+import {
+  ChevronDown,
+  CircleAlert,
+  ClipboardCheck,
+  FileDown,
+  Files,
+  FileText,
+  Image as ImageIcon,
+  KeyRound,
+  LoaderCircle,
+  ScanText,
+  Square,
+  Trash2,
+  Upload,
+} from 'lucide-react'
+import { memo, useRef, useState, type ReactNode } from 'react'
 
-import type { DocumentInfo, Page } from '../api'
+import type { DocumentInfo, EvaluationSummary, Page } from '../api'
+import { isRunning, type EvaluationRun } from '../evaluationRunner'
+import { formatMarks } from '../exams'
 import { isActive, pageKey, pageStatus, type OcrJob, type PageStatus } from '../ocrQueue'
 import { pluralize } from '../utils'
 import { StatusBadge } from './StatusBadge'
+
+export type SidebarMode = 'papers' | 'keys'
+
+/** The sidebar, with tabs for the uploaded papers and the answer keys. */
+export function Sidebar({
+  mode,
+  onModeChange,
+  paperCount,
+  keyCount,
+  children,
+}: {
+  mode: SidebarMode
+  onModeChange: (mode: SidebarMode) => void
+  paperCount: number
+  keyCount: number
+  children: ReactNode
+}) {
+  const tab = (value: SidebarMode, icon: ReactNode, label: string, count: number) => (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={mode === value}
+      className={mode === value ? 'is-active' : undefined}
+      onClick={() => onModeChange(value)}
+    >
+      {icon}
+      {label}
+      {count > 0 && <span className="tab-count">{count}</span>}
+    </button>
+  )
+  return (
+    <aside className="sidebar" aria-label={mode === 'papers' ? 'Papers' : 'Answer keys'}>
+      <div className="tabs sidebar-tabs" role="tablist" aria-label="Show">
+        {tab('papers', <Files size={15} aria-hidden />, 'Papers', paperCount)}
+        {tab('keys', <KeyRound size={15} aria-hidden />, 'Answer keys', keyCount)}
+      </div>
+      {children}
+    </aside>
+  )
+}
 
 export interface Selection {
   documentId: string
@@ -17,10 +73,12 @@ export interface UploadProgress {
   total: number
 }
 
-interface SidebarProps {
+interface PaperListProps {
   documents: DocumentInfo[]
   loading: boolean
   jobs: ReadonlyMap<string, OcrJob>
+  evaluations: EvaluationSummary[]
+  runs: ReadonlyMap<string, EvaluationRun>
   selection: Selection | null
   upload: UploadProgress | null
   acceptedExtensions: string[]
@@ -33,12 +91,14 @@ interface SidebarProps {
   onStopAll: (document: DocumentInfo) => void
   onDownload: (document: DocumentInfo) => void
   onDelete: (document: DocumentInfo) => void
+  onOpenMarks: (document: DocumentInfo) => void
 }
 
-export function Sidebar(props: SidebarProps) {
+/** The uploaded papers and their pages. */
+export function PaperList(props: PaperListProps) {
   const { documents, loading, upload, acceptedExtensions, maxUploadMb, onUpload } = props
   return (
-    <aside className="sidebar" aria-label="Documents">
+    <>
       <div className="sidebar-upload">
         <UploadButton accept={acceptedExtensions} busy={upload !== null} onFiles={onUpload} />
         <p className="hint">
@@ -50,13 +110,15 @@ export function Sidebar(props: SidebarProps) {
       <div className="document-list">
         {loading && documents.length === 0 && <p className="sidebar-empty">Loading documents…</p>}
         {!loading && documents.length === 0 && (
-          <p className="sidebar-empty">No documents yet. Upload a PDF or an image to get started.</p>
+          <p className="sidebar-empty">
+            No papers yet. Upload each student's answer script as a PDF or images, one file per student.
+          </p>
         )}
         {documents.map((document) => (
           <DocumentGroup key={document.id} document={document} {...props} />
         ))}
       </div>
-    </aside>
+    </>
   )
 }
 
@@ -65,11 +127,13 @@ export function UploadButton({
   busy,
   onFiles,
   large = false,
+  label = 'Upload PDF or image',
 }: {
   accept: string[]
   busy: boolean
   onFiles: (files: File[]) => void
   large?: boolean
+  label?: string
 }) {
   const input = useRef<HTMLInputElement>(null)
   return (
@@ -80,7 +144,7 @@ export function UploadButton({
         onClick={() => input.current?.click()}
       >
         {busy ? <LoaderCircle size={16} className="spin" aria-hidden /> : <Upload size={16} aria-hidden />}
-        Upload PDF or image
+        {label}
       </button>
       <input
         ref={input}
@@ -101,6 +165,8 @@ export function UploadButton({
 function DocumentGroup({
   document,
   jobs,
+  evaluations,
+  runs,
   selection,
   onSelect,
   onExtract,
@@ -109,7 +175,8 @@ function DocumentGroup({
   onStopAll,
   onDownload,
   onDelete,
-}: SidebarProps & { document: DocumentInfo }) {
+  onOpenMarks,
+}: PaperListProps & { document: DocumentInfo }) {
   const [collapsed, setCollapsed] = useState(false)
   const statuses = document.pages.map((page) => pageStatus(page, jobs.get(pageKey(document.id, page.number))))
   const extracted = document.pages.filter((page) => page.ocr).length
@@ -179,6 +246,11 @@ function DocumentGroup({
       <div className="document-progress" title={`${extracted} of ${document.pages.length} pages extracted`}>
         <span style={{ width: `${(extracted / document.pages.length) * 100}%` }} />
       </div>
+      <MarksLine
+        run={runs.get(document.id)}
+        evaluation={evaluations.find((evaluation) => evaluation.document_id === document.id)}
+        onOpen={() => onOpenMarks(document)}
+      />
       {!collapsed && (
         <ul className="page-list">
           {document.pages.map((page, index) => (
@@ -255,3 +327,62 @@ const PageRow = memo(function PageRow({
     </li>
   )
 })
+
+const RUN_STEPS = {
+  extract: 'Reading pages…',
+  split: 'Finding answers…',
+  mark: 'Marking',
+}
+
+/** The paper's marks, or how its evaluation is going. */
+function MarksLine({
+  run,
+  evaluation,
+  onOpen,
+}: {
+  run: EvaluationRun | undefined
+  evaluation: EvaluationSummary | undefined
+  onOpen: () => void
+}) {
+  let content: ReactNode
+  if (isRunning(run)) {
+    const step =
+      run!.status === 'queued'
+        ? 'Waiting to be evaluated'
+        : run!.step === 'mark'
+          ? `Marking ${run!.toMark - run!.marking.length} of ${run!.toMark}…`
+          : RUN_STEPS[run!.step ?? 'extract']
+    content = (
+      <>
+        <LoaderCircle size={13} className="spin" aria-hidden />
+        {step}
+      </>
+    )
+  } else if (run?.status === 'error' && !evaluation) {
+    content = (
+      <>
+        <CircleAlert size={13} aria-hidden />
+        Evaluation failed
+      </>
+    )
+  } else if (evaluation) {
+    content = (
+      <>
+        <ClipboardCheck size={13} aria-hidden />
+        <strong>
+          {formatMarks(evaluation.marks)} / {formatMarks(evaluation.max_marks)}
+        </strong>
+        {!evaluation.complete && <span className="marks-incomplete">incomplete</span>}
+        {evaluation.student_name && <span className="truncate">· {evaluation.student_name}</span>}
+      </>
+    )
+  } else {
+    return null
+  }
+  const state = isRunning(run) ? ' is-running' : run?.status === 'error' && !evaluation ? ' is-error' : ''
+  return (
+    <button type="button" className={`marks-line${state}`} onClick={onOpen} title="Show the marks">
+      {content}
+    </button>
+  )
+}

@@ -97,6 +97,32 @@ export class OcrQueue {
     this.emit()
   }
 
+  /** Resolves once none of the jobs with these keys is queued or running. Rejects if the signal aborts first. */
+  settled(keys: string[], signal?: AbortSignal): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const onAbort = () => {
+        cleanup()
+        reject(signal?.reason ?? new DOMException('Aborted', 'AbortError'))
+      }
+      const check = () => {
+        if (keys.some((key) => isActive(this.jobs.get(key)))) return
+        cleanup()
+        resolve()
+      }
+      const unsubscribe = this.subscribe(check)
+      const cleanup = () => {
+        unsubscribe()
+        signal?.removeEventListener('abort', onAbort)
+      }
+      if (signal?.aborted) {
+        onAbort()
+        return
+      }
+      signal?.addEventListener('abort', onAbort)
+      check()
+    })
+  }
+
   /** Cancel and forget every job that matches. */
   remove(matches: (job: OcrJob) => boolean): void {
     for (const job of [...this.jobs.values()]) {

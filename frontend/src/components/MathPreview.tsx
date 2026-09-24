@@ -14,11 +14,11 @@ const remarkPlugins = [remarkGfm, remarkMath, remarkBreaks]
 const rehypePlugins: [typeof rehypeKatex, Parameters<typeof rehypeKatex>[0]][] = [[rehypeKatex, { strict: 'ignore' }]]
 
 /** The extracted text rendered as Markdown, with its LaTeX maths typeset. */
-export default function MathPreview({ text }: { text: string }) {
+export default function MathPreview({ text, className = 'result-preview' }: { text: string; className?: string }) {
   // While text streams in, let React skip renders it cannot keep up with.
   const deferredText = useDeferredValue(text)
   return (
-    <div className="result-preview">
+    <div className={className}>
       <ReactMarkdown
         remarkPlugins={remarkPlugins}
         rehypePlugins={rehypePlugins}

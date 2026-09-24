@@ -271,6 +271,12 @@ class OllamaClient:
                 if signin_url:
                     hint += f" Sign-in link: {signin_url}"
             return OllamaError(f"Ollama refused the request (HTTP {status}: {detail}). {hint}", status_code=status)
+        if status == 402:
+            return OllamaError(
+                f"Your Ollama plan does not include {model or 'this model'} (HTTP 402: {detail}). "
+                "Choose another model, or add usage credits on ollama.com.",
+                status_code=status,
+            )
         if status == 404 and model:
             hint = (
                 "Check the model's exact name on ollama.com."

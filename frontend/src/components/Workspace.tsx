@@ -1,4 +1,5 @@
-import { ChevronLeft, ChevronRight, FileText, Image as ImageIcon } from 'lucide-react'
+import { ChevronLeft, ChevronRight, ClipboardCheck, FileText, Image as ImageIcon, ScanText } from 'lucide-react'
+import type { ReactNode } from 'react'
 
 import type { DocumentInfo, Page } from '../api'
 import type { OcrJob } from '../ocrQueue'
@@ -6,11 +7,17 @@ import { ImageViewer } from './ImageViewer'
 import { ResultPanel } from './ResultPanel'
 import { SplitPane } from './SplitPane'
 
+export type WorkspacePanel = 'text' | 'marks'
+
 interface WorkspaceProps {
   document: DocumentInfo
   page: Page
   job: OcrJob | undefined
   model: string
+  /** What the right-hand side shows: the page's text, or the paper's marks. */
+  panel: WorkspacePanel
+  onPanelChange: (panel: WorkspacePanel) => void
+  marks: ReactNode
   onSelectPage: (pageNumber: number) => void
   onExtract: () => void
   onStop: () => void
@@ -18,8 +25,16 @@ interface WorkspaceProps {
   onError: (message: string) => void
 }
 
-/** The selected page: its image on the left and the extracted text on the right. */
-export function Workspace({ document, page, onSelectPage, ...resultProps }: WorkspaceProps) {
+/** The selected page's image on the left, and its extracted text or the paper's marks on the right. */
+export function Workspace({
+  document,
+  page,
+  panel,
+  onPanelChange,
+  marks,
+  onSelectPage,
+  ...resultProps
+}: WorkspaceProps) {
   const count = document.pages.length
   const KindIcon = document.kind === 'pdf' ? FileText : ImageIcon
   return (
@@ -29,6 +44,26 @@ export function Workspace({ document, page, onSelectPage, ...resultProps }: Work
           <KindIcon size={16} aria-hidden />
           <span className="truncate">{document.filename}</span>
         </h1>
+        <div className="segmented segmented-small workspace-switch" role="group" aria-label="Show on the right">
+          <button
+            type="button"
+            className={panel === 'text' ? 'is-active' : undefined}
+            aria-pressed={panel === 'text'}
+            onClick={() => onPanelChange('text')}
+          >
+            <ScanText size={13} aria-hidden />
+            Page text
+          </button>
+          <button
+            type="button"
+            className={panel === 'marks' ? 'is-active' : undefined}
+            aria-pressed={panel === 'marks'}
+            onClick={() => onPanelChange('marks')}
+          >
+            <ClipboardCheck size={13} aria-hidden />
+            Marks
+          </button>
+        </div>
         {count > 1 && (
           <nav className="pager" aria-label="Pages">
             <button
@@ -67,7 +102,7 @@ export function Workspace({ document, page, onSelectPage, ...resultProps }: Work
             alt={`Page ${page.number} of ${document.filename}`}
           />
         }
-        right={<ResultPanel document={document} page={page} {...resultProps} />}
+        right={panel === 'marks' ? marks : <ResultPanel document={document} page={page} {...resultProps} />}
       />
     </section>
   )
