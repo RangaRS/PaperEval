@@ -1,0 +1,5 @@
+-r requirements.txt
+pytest>=8
+ruff>=0.6
+# Starlette's TestClient prefers httpx2 over httpx.
+httpx2>=2.0
