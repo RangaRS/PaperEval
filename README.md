@@ -17,8 +17,9 @@ Each page is shown next to its extracted text, so you can check the OCR against 
 - **Side-by-side comparison.** The page image is on the left (fit width or page, zoom with the buttons or
   Ctrl/⌘ + scroll, drag to pan). The text is on the right (copy, download as `.txt`, monospace toggle).
   Drag the divider between them to resize.
-- **Ollama Cloud or local.** The model list comes from the server. Models that can't read images are hidden,
-  and thinking models have their reasoning turned off so they answer straight away.
+- **Ollama Cloud or local.** The model list comes from the server, and you can add any other model by name.
+  Models that can't read images are hidden, and thinking models have their reasoning turned off so they answer
+  straight away.
 - **Results are kept.** Pages and extracted text are saved on disk, so they are still there after a restart.
   You can download all of a document's text as one file.
 - **Choose the prompt.** Use the *Plain text* or *Markdown* preset, or write your own in Settings.
@@ -77,6 +78,21 @@ The browser never talks to Ollama directly, so your API key stays on the server.
 | Model names | as listed by ollama.com, e.g. `qwen3-vl:235b` | with a `-cloud` suffix, e.g. `qwen3-vl:235b-cloud` |
 
 Both work without code changes. The backend can also use ordinary local models, such as `ollama pull qwen2.5vl`.
+
+### Adding models to the list
+
+The model list shows the vision models your Ollama server reports. To use a model that isn't listed:
+
+- **In the app:** choose **+ Add a model…** at the bottom of the model list (or open **Settings → Models**), type the
+  model's exact name and press **Add**. It is selected right away and saved in your browser. Remove it from the same
+  place in Settings.
+- **As the default for everyone:** set `OLLAMA_MODEL` in `backend/.env`. It always appears in the list and is used
+  until someone picks another model.
+- **With a local Ollama:** `ollama pull <model>` (for example `ollama pull qwen3-vl:235b-cloud`) makes it appear in
+  the list by itself.
+
+If the server says an added model cannot read images, extracting with it stops with an error, rather than letting
+the model guess at the page.
 
 ## Running as a single server
 

@@ -1,29 +1,51 @@
-import { X } from 'lucide-react'
-import { useEffect, useRef } from 'react'
+import { Plus, X } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
 
 import type { AppConfig, OllamaStatus } from '../api'
 
 interface SettingsDialogProps {
   open: boolean
+  /** Put the cursor in the "add a model" field when the dialog opens. */
+  focusModelInput: boolean
   onClose: () => void
   config: AppConfig | null
   status: OllamaStatus | null
   prompt: string
   onPromptChange: (prompt: string) => void
+  addedModels: string[]
+  onAddModel: (name: string) => void
+  onRemoveModel: (name: string) => void
 }
 
-export function SettingsDialog({ open, onClose, config, status, prompt, onPromptChange }: SettingsDialogProps) {
+export function SettingsDialog({
+  open,
+  focusModelInput,
+  onClose,
+  config,
+  status,
+  prompt,
+  onPromptChange,
+  addedModels,
+  onAddModel,
+  onRemoveModel,
+}: SettingsDialogProps) {
   const dialog = useRef<HTMLDialogElement>(null)
+  const modelInput = useRef<HTMLInputElement>(null)
+  const [modelName, setModelName] = useState('')
 
   useEffect(() => {
     const element = dialog.current
     if (!element) return
-    if (open && !element.open) element.showModal()
+    if (open && !element.open) {
+      element.showModal()
+      if (focusModelInput) modelInput.current?.focus()
+    }
     if (!open && element.open) element.close()
-  }, [open])
+  }, [open, focusModelInput])
 
   const presets = config?.prompt_presets ?? []
   const activePreset = presets.find((preset) => preset.prompt === prompt)
+  const newModel = modelName.trim()
 
   return (
     <dialog
@@ -40,6 +62,57 @@ export function SettingsDialog({ open, onClose, config, status, prompt, onPrompt
             <X size={18} />
           </button>
         </header>
+
+        <section className="dialog-section">
+          <h3>Models</h3>
+          <p className="hint">
+            The model list shows the vision models your Ollama server offers. To use a model that is not listed, add
+            it by its exact name. Added models are saved in this browser.
+          </p>
+          <form
+            className="model-add"
+            onSubmit={(event) => {
+              event.preventDefault()
+              if (!newModel) return
+              onAddModel(newModel)
+              setModelName('')
+            }}
+          >
+            <input
+              ref={modelInput}
+              className="text-input"
+              value={modelName}
+              onChange={(event) => setModelName(event.target.value)}
+              placeholder="Model name, e.g. qwen3-vl:235b"
+              aria-label="Model name"
+              autoComplete="off"
+              autoCapitalize="off"
+              spellCheck={false}
+            />
+            <button type="submit" className="btn" disabled={!newModel}>
+              <Plus size={14} aria-hidden />
+              Add
+            </button>
+          </form>
+          {addedModels.length > 0 && (
+            <ul className="model-chips" aria-label="Added models">
+              {addedModels.map((name) => (
+                <li key={name} className="model-chip">
+                  <code>{name}</code>
+                  <button
+                    type="button"
+                    className="icon-btn"
+                    onClick={() => onRemoveModel(name)}
+                    aria-label={`Remove ${name}`}
+                    title="Remove"
+                  >
+                    <X size={13} />
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </section>
 
         <section className="dialog-section">
           <h3>Prompt</h3>

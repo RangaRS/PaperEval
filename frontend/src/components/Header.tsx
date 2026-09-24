@@ -1,18 +1,29 @@
 import { Cloud, LoaderCircle, RefreshCw, Server, Settings } from 'lucide-react'
 
 import type { ModelInfo, OllamaStatus } from '../api'
+import { offeredNames, type ModelGroups } from '../models'
 
 interface HeaderProps {
   status: OllamaStatus | null
   checking: boolean
-  models: ModelInfo[]
+  models: ModelGroups
   model: string
   onModelChange: (model: string) => void
+  onAddModel: () => void
   onRefresh: () => void
   onOpenSettings: () => void
 }
 
-export function Header({ status, checking, models, model, onModelChange, onRefresh, onOpenSettings }: HeaderProps) {
+export function Header({
+  status,
+  checking,
+  models,
+  model,
+  onModelChange,
+  onAddModel,
+  onRefresh,
+  onOpenSettings,
+}: HeaderProps) {
   return (
     <header className="topbar">
       <div className="brand">
@@ -22,7 +33,7 @@ export function Header({ status, checking, models, model, onModelChange, onRefre
       </div>
       <div className="topbar-controls">
         <ConnectionBadge status={status} checking={checking} onRefresh={onRefresh} />
-        <ModelPicker models={models} value={model} onChange={onModelChange} disabled={!status?.reachable} />
+        <ModelPicker groups={models} value={model} onChange={onModelChange} onAddModel={onAddModel} />
         <button type="button" className="icon-btn" onClick={onOpenSettings} title="Settings" aria-label="Settings">
           <Settings size={18} />
         </button>
@@ -60,20 +71,20 @@ function ConnectionBadge({
   )
 }
 
+// The value of the "Add a model…" entry. Added names are trimmed, so none can start with a space.
+const ADD_MODEL = ' add a model'
+
 function ModelPicker({
-  models,
+  groups,
   value,
   onChange,
-  disabled,
+  onAddModel,
 }: {
-  models: ModelInfo[]
+  groups: ModelGroups
   value: string
   onChange: (model: string) => void
-  disabled: boolean
+  onAddModel: () => void
 }) {
-  const vision = models.filter((model) => model.vision === true)
-  const unknown = models.filter((model) => model.vision === null)
-  const listed = [...vision, ...unknown].some((model) => model.name === value)
   const option = (model: ModelInfo) => (
     <option key={model.name} value={model.name}>
       {model.name}
@@ -85,15 +96,28 @@ function ModelPicker({
   return (
     <label className="model-picker" title="The Ollama model that reads the pages">
       <span className="model-picker-label">Model</span>
-      <select value={value} onChange={(event) => onChange(event.target.value)} disabled={disabled && !value}>
-        {!value && <option value="">No vision model found</option>}
-        {value && !listed && <option value={value}>{value}</option>}
-        {vision.length > 0 && <optgroup label="Vision models">{vision.map(option)}</optgroup>}
-        {unknown.length > 0 && (
-          <optgroup label={vision.length > 0 ? 'Other models (image support unknown)' : 'Models'}>
-            {unknown.map(option)}
+      <select
+        value={value}
+        onChange={(event) => (event.target.value === ADD_MODEL ? onAddModel() : onChange(event.target.value))}
+      >
+        {!value && <option value="">Choose a model</option>}
+        {value && !offeredNames(groups).includes(value) && <option value={value}>{value}</option>}
+        {groups.vision.length > 0 && <optgroup label="Vision models">{groups.vision.map(option)}</optgroup>}
+        {groups.unknown.length > 0 && (
+          <optgroup label={groups.vision.length > 0 ? 'Other models (image support unknown)' : 'Models'}>
+            {groups.unknown.map(option)}
           </optgroup>
         )}
+        {groups.added.length > 0 && (
+          <optgroup label="Added by you">
+            {groups.added.map((name) => (
+              <option key={name} value={name}>
+                {name}
+              </option>
+            ))}
+          </optgroup>
+        )}
+        <option value={ADD_MODEL}>+ Add a model…</option>
       </select>
     </label>
   )

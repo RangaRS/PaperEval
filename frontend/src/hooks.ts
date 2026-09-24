@@ -35,6 +35,8 @@ export function useLocalStorage<T>(
 export const isString = (value: unknown): value is string => typeof value === 'string'
 export const isNumber = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value)
 export const isBoolean = (value: unknown): value is boolean => typeof value === 'boolean'
+export const isStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((item) => typeof item === 'string')
 
 /** Seconds since `since`, updated every second. */
 export function useElapsedSeconds(since: number | undefined): number {

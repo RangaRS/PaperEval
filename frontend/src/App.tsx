@@ -1,28 +1,20 @@
 import { CloudOff, FileUp, RefreshCw, TriangleAlert } from 'lucide-react'
-import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 
-import { api, type AppConfig, type DocumentInfo, type ModelInfo, type OllamaStatus } from './api'
+import { api, type AppConfig, type DocumentInfo, type OllamaStatus } from './api'
 import { EmptyState } from './components/EmptyState'
 import { Header } from './components/Header'
 import { SettingsDialog } from './components/SettingsDialog'
 import { Sidebar, type Selection, type UploadProgress } from './components/Sidebar'
 import { Toasts } from './components/Toasts'
 import { Workspace } from './components/Workspace'
-import { isString, useFileDrop, useLocalStorage, useToasts } from './hooks'
+import { isString, isStringArray, useFileDrop, useLocalStorage, useToasts } from './hooks'
+import { chooseModel, modelGroups, offeredNames } from './models'
 import { OcrQueue, pageKey } from './ocrQueue'
 import { documentText, downloadText, errorMessage, fileStem } from './utils'
 
 const MB = 1024 * 1024
 const isPrompt = (value: unknown): value is string | null => value === null || typeof value === 'string'
-
-/** The model picked earlier if it is still offered, else the configured default, else the first vision model. */
-function chooseModel(saved: string, configured: string, models: ModelInfo[]): string {
-  const usable = models.filter((model) => model.vision !== false)
-  const offered = (name: string) => name !== '' && (models.length === 0 || usable.some((model) => model.name === name))
-  if (offered(saved)) return saved
-  if (offered(configured)) return configured
-  return usable.find((model) => model.vision === true)?.name ?? usable[0]?.name ?? ''
-}
 
 function withPageText(documents: DocumentInfo[], documentId: string, pageNumber: number, ocr: DocumentInfo['pages'][number]['ocr']) {
   return documents.map((document) =>
@@ -41,7 +33,9 @@ export default function App() {
   const [selection, setSelection] = useState<Selection | null>(null)
   const [upload, setUpload] = useState<UploadProgress | null>(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [focusModelInput, setFocusModelInput] = useState(false)
   const [savedModel, setSavedModel] = useLocalStorage('papereval.model', '', isString)
+  const [addedModels, setAddedModels] = useLocalStorage<string[]>('papereval.addedModels', [], isStringArray)
   const [customPrompt, setCustomPrompt] = useLocalStorage<string | null>('papereval.prompt', null, isPrompt)
   const { toasts, notify, dismiss: dismissToast } = useToasts()
 
@@ -107,10 +101,28 @@ export default function App() {
     return () => window.removeEventListener('focus', onFocus)
   }, [loadStatus, refreshStatus])
 
-  const models = status?.models ?? []
-  const model = chooseModel(savedModel, config?.default_model ?? '', models)
+  const configuredModel = config?.default_model ?? ''
+  // The configured default (OLLAMA_MODEL) is always offered, even if the server does not list it.
+  const groups = useMemo(
+    () => modelGroups(status?.models ?? [], [...addedModels, configuredModel]),
+    [status, addedModels, configuredModel],
+  )
+  const model = chooseModel(savedModel, configuredModel, groups, (status?.models.length ?? 0) > 0)
   const prompt = customPrompt ?? config?.default_prompt ?? ''
   const setPrompt = (value: string) => setCustomPrompt(value === config?.default_prompt ? null : value)
+
+  const openSettings = (focusModels = false) => {
+    setFocusModelInput(focusModels)
+    setSettingsOpen(true)
+  }
+
+  const addModel = (name: string) => {
+    setAddedModels((current) => (current.includes(name) ? current : [...current, name]))
+    setSavedModel(name)
+    notify(`Added ${name}. It is now selected.`, 'info')
+  }
+
+  const removeModel = (name: string) => setAddedModels((current) => current.filter((added) => added !== name))
 
   const selectPage = useCallback(
     (documentId: string, pageNumber: number) => setSelection({ documentId, pageNumber }),
@@ -223,18 +235,19 @@ export default function App() {
   }, [selectedDocument])
 
   const accepted = config?.accepted_extensions ?? ['.pdf', '.png', '.jpg', '.jpeg', '.webp', '.tif', '.tiff']
-  const hasVisionModel = models.some((candidate) => candidate.vision !== false)
+  const hasModels = offeredNames(groups).length > 0
 
   return (
     <div className="app">
       <Header
         status={status}
         checking={checking}
-        models={models}
+        models={groups}
         model={model}
         onModelChange={setSavedModel}
+        onAddModel={() => openSettings(true)}
         onRefresh={refreshStatus}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={() => openSettings()}
       />
 
       {status && !status.reachable && (
@@ -257,16 +270,16 @@ export default function App() {
           </span>
         </div>
       )}
-      {status?.reachable && !hasVisionModel && (
+      {status?.reachable && !hasModels && (
         <div className="banner banner-warning" role="status">
           <TriangleAlert size={18} aria-hidden />
           <span>
             {status.cloud ? (
-              'No vision models are available from Ollama Cloud right now.'
+              'No vision models are available from Ollama Cloud right now. You can still add a model by name from the model list.'
             ) : (
               <>
-                No vision models found. Pull one (for example <code>ollama pull qwen2.5vl</code>), or run{' '}
-                <code>ollama signin</code> to use Ollama Cloud models.
+                No vision models found. Pull one (for example <code>ollama pull qwen2.5vl</code>), run{' '}
+                <code>ollama signin</code> to use Ollama Cloud models, or add a model by name from the model list.
               </>
             )}
           </span>
@@ -317,11 +330,15 @@ export default function App() {
 
       <SettingsDialog
         open={settingsOpen}
+        focusModelInput={focusModelInput}
         onClose={() => setSettingsOpen(false)}
         config={config}
         status={status}
         prompt={prompt}
         onPromptChange={setPrompt}
+        addedModels={addedModels}
+        onAddModel={addModel}
+        onRemoveModel={removeModel}
       />
 
       {dragging && (
