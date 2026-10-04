@@ -170,6 +170,15 @@ Choose the **Reading model** at the top: the vision model that extracts the text
    marked. Write maths in LaTeX (`$\frac{a}{b}$`); **Preview** shows it typeset. Press **Save changes** (or
    Ctrl+S). You can also type the questions in, or **Import JSON** in the [answer key format](#answer-key-format).
 
+   The questions are laid out as on the paper. **Sub-part** splits a question into parts that must all be
+   answered ("11" becomes "11 (a)" and "11 (b)"), **OR option** gives it an alternative ("11 (a) OR 11 (b)"), and
+   **Add a section** groups questions into a part such as "Part B". Each section or question with parts says which
+   of its parts count: all of them, one of them (either / or), or any number of them ("answer any five"),
+   optionally with at least so many from each of its parts, and with a cap on its marks. **Add from a pattern**
+   adds many questions at once, such as ten compulsory 2-mark questions or five either / or pairs. When the key file
+   is read, the AI is asked for this layout too; check the rules it set. The total counts only as many choices as
+   a student may make.
+
    ![The questions, with their maths previewed](docs/answer-key.png)
 3. **Upload the answer papers** in step 2, **Answer papers**: one PDF (or images of the pages) per student. Pick
    them, or drop them anywhere on the window. Each paper is marked against the evaluator's questions as soon as it
@@ -182,7 +191,8 @@ Choose the **Reading model** at the top: the vision model that extracts the text
    feedback and its pages; click a page to see it on the left. Type another number to change a mark (**Undo** goes
    back to the AI's), **Correct the answer** when the text was read wrong (it is then marked again), or **Mark
    again** to have it re-marked. **Question and marking key** shows what the answer was marked against. Marks
-   changed by you count instead of the AI's in the totals.
+   changed by you count instead of the AI's in the totals. Where a student answered more choices than the paper
+   allows, every answer is marked and the best ones count; the others are shown as **Not counted**.
 5. **Get the results** in step 3, **Results**: every student's marks per question. **Download CSV** saves them with
    the totals and each student's name and roll number.
 
@@ -218,6 +228,25 @@ An evaluator's questions are saved in `backend/data/exams/<id>.json`, and **Expo
 
 `key` is the marking scheme: which points or steps earn how many marks. Import also accepts a plain list of
 questions, and `marks`, `model_answer` or `marking_scheme` as field names.
+
+A section, a question with sub-parts or a choice is an item with `parts`, in the same format, and a rule saying
+which of them count: `"rule": "all"`, or `"rule": "any"` with `count` (1 for either / or). `min_each` takes at least
+that many from each of its parts (`0` for no such rule), and `cap` limits its marks (`0` for no limit):
+
+```json
+{
+  "number": "11",
+  "question": "",
+  "rule": "any",
+  "count": 1,
+  "min_each": 0,
+  "cap": 0,
+  "parts": [
+    { "number": "11 (a)", "question": "...", "answer": "...", "key": "...", "max_marks": 13 },
+    { "number": "11 (b)", "question": "...", "answer": "...", "key": "...", "max_marks": 13 }
+  ]
+}
+```
 
 ## Updating
 

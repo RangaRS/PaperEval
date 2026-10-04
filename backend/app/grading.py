@@ -17,6 +17,7 @@ from typing import Any, TypeVar
 
 from .exams import Question
 from .ollama import OllamaClient, UnusableReplyError, parse_json_answer, with_retries
+from .paper import ROOT_ID, Group, QuestionRef
 from .storage import StoredDocument
 
 logger = logging.getLogger("uvicorn.error")
@@ -33,30 +34,46 @@ For every question in the text, give:
 - key: its marking scheme, for example which steps or points earn how many marks, if the text gives one, otherwise \
 "".
 - max_marks: its maximum marks if the text states them, otherwise 0.
-Give each sub-question that has its own marks, like 11 (a) and 11 (b), as a question of its own.
+Keep the paper's layout. Give a section ("Part B") or a question with sub-questions ("11" with "(a)" and "(b)") as \
+an object with:
+- number: its label, for example "Part B" or "11".
+- question: its instructions or the text its sub-questions share, for example "Answer any five questions.".
+- rule: which of its parts count. "all" when every part must be answered; "any 1" for a choice between parts, like \
+"11 (a) OR 11 (b)"; "any 5" for "answer any five"; "any 6, at least 2 from each" when the parts are sections and \
+some must come from each.
+- parts: its questions or sub-questions, in the same shape.
 Copy the wording and any LaTeX maths exactly. Do not invent anything that is not in the text.
 Reply with only a JSON object, in this shape:
 {"name": "the exam's title, or an empty string", "questions": [{"number": "1", "question": "...", "answer": "...", \
-"key": "...", "max_marks": 2}]}"""
+"key": "...", "max_marks": 2}, {"number": "11", "question": "", "rule": "any 1", "parts": [{"number": "11 (a)", \
+"question": "...", "answer": "...", "key": "...", "max_marks": 13}, {"number": "11 (b)", "question": "...", \
+"answer": "...", "key": "...", "max_marks": 13}]}]}"""
+
+
+def _key_item_schema(depth: int) -> dict[str, Any]:
+    """A question, or a section or question with parts nested up to ``depth`` levels deep."""
+    properties: dict[str, Any] = {
+        "number": {"type": "string"},
+        "question": {"type": "string"},
+        "answer": {"type": "string"},
+        "key": {"type": "string"},
+        "max_marks": {"type": "number"},
+    }
+    if depth > 0:
+        properties["rule"] = {"type": "string"}
+        properties["parts"] = {"type": "array", "items": _key_item_schema(depth - 1)}
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": ["number", "question", "answer", "key", "max_marks"],
+    }
+
 
 ANSWER_KEY_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
         "name": {"type": "string"},
-        "questions": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "number": {"type": "string"},
-                    "question": {"type": "string"},
-                    "answer": {"type": "string"},
-                    "key": {"type": "string"},
-                    "max_marks": {"type": "number"},
-                },
-                "required": ["number", "question", "answer", "key", "max_marks"],
-            },
-        },
+        "questions": {"type": "array", "items": _key_item_schema(3)},
     },
     "required": ["name", "questions"],
 }
@@ -134,6 +151,7 @@ _KEY_FIELDS = (
     "criteria",
 )
 _MAX_MARKS_FIELDS = ("max_marks", "marks", "maximum_marks", "max_mark", "total_marks", "mark", "points", "max_points")
+_RULE_FIELDS = ("rule", "choice", "choices", "attempt", "instructions", "instruction")
 _PART_FIELDS = ("parts", "sub_questions", "subquestions", "questions", "items")
 _SPLIT_QUESTION_FIELDS = ("question", "question_id", "id", "q", "question_number", "number", "qno", "q_no")
 _SPLIT_ANSWER_FIELDS = ("answer", "student_answer", "text", "response", "content", "answer_text")
@@ -159,6 +177,8 @@ _SIGNED_NUMBER = re.compile(r"-?\d+(?:\.\d+)?")
 class AnswerKey:
     name: str
     questions: list[Question]
+    # The paper's sections, sub-questions and choices.
+    structure: Group | None = None
 
 
 @dataclass
@@ -239,7 +259,8 @@ async def read_answer_key(
 
 def parse_answer_key(data: Any) -> AnswerKey:
     """Read the questions from a model's JSON, whatever shape it used."""
-    return AnswerKey(name=_title(data)[:200], questions=_questions(_items(data)))
+    questions, nodes = _questions(_items(data))
+    return AnswerKey(name=_title(data)[:200], questions=questions, structure=_root(nodes))
 
 
 def _title(data: Any, depth: int = 0) -> str:
@@ -408,9 +429,17 @@ def _looks_like_question(item: dict[str, Any]) -> bool:
     return _pick(fields, *_QUESTION_FIELDS, *_ANSWER_FIELDS) is not None
 
 
-def _questions(items: list[dict[str, Any]], *, parent: str = "", stem: str = "", depth: int = 0) -> list[Question]:
-    """Questions from the model's objects, flattening sections ("Part A") and parts ("11" with "(a)" and "(b)")."""
+def _questions(
+    items: list[dict[str, Any]], *, parent: str = "", stem: str = "", depth: int = 0
+) -> tuple[list[Question], list[Group | QuestionRef]]:
+    """Questions from the model's objects, with the paper's layout of sections ("Part A") and parts ("11" with
+    "(a)" and "(b)") and the rules saying which of them count.
+
+    Each question's text starts with the text of the sections and questions it is part of, so that it can be
+    marked on its own.
+    """
     questions: list[Question] = []
+    nodes: list[Group | QuestionRef] = []
     for item in items:
         fields = _normalized(item)
         number = _text(_pick(fields, *_NUMBER_FIELDS))
@@ -419,27 +448,80 @@ def _questions(items: list[dict[str, Any]], *, parent: str = "", stem: str = "",
         parts = next((fields[name] for name in _PART_FIELDS if isinstance(fields.get(name), list)), None)
         if parts and not answer and depth < 3:
             is_question = bool(number) and number[0].isdigit()
-            inner = _questions(
+            label = _join_numbers(parent, number) if is_question else parent
+            inner, inner_nodes = _questions(
                 [part for part in parts if isinstance(part, dict)],
-                parent=_join_numbers(parent, number) if is_question else parent,
+                parent=label,
                 stem="\n\n".join(filter(None, (stem, text))),
                 depth=depth + 1,
             )
             if inner:
                 questions.extend(inner)
+                nodes.append(
+                    Group(
+                        label=(label if is_question else number)[:100],
+                        text=text[:20_000],
+                        children=inner_nodes,
+                        **_rule(_text(_pick(fields, *_RULE_FIELDS)), text, inner_nodes),
+                    )
+                )
                 continue
         if not text and not answer:
             continue
-        questions.append(
-            Question(
-                number=_join_numbers(parent, number)[:40],
-                question="\n\n".join(filter(None, (stem, text)))[:20_000],
-                answer=answer[:50_000],
-                key=_text(_pick(fields, *_KEY_FIELDS))[:20_000],
-                max_marks=_marks(_pick(fields, *_MAX_MARKS_FIELDS)),
-            )
+        question = Question(
+            number=_join_numbers(parent, number)[:40],
+            question="\n\n".join(filter(None, (stem, text)))[:20_000],
+            answer=answer[:50_000],
+            key=_text(_pick(fields, *_KEY_FIELDS))[:20_000],
+            max_marks=_marks(_pick(fields, *_MAX_MARKS_FIELDS)),
         )
-    return questions
+        questions.append(question)
+        nodes.append(QuestionRef(question_id=question.id))
+    return questions, nodes
+
+
+def _root(nodes: list[Group | QuestionRef]) -> Group:
+    """The whole paper. When the model gave it as one unnamed group, that group is the paper."""
+    if len(nodes) == 1 and isinstance(nodes[0], Group) and not nodes[0].label:
+        return nodes[0].model_copy(update={"id": ROOT_ID})
+    return Group(id=ROOT_ID, children=nodes)
+
+
+_COUNT_WORDS = {
+    word: number
+    for number, word in enumerate(
+        "zero one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen".split()
+    )
+}
+_COUNT = r"(\d+|" + "|".join(_COUNT_WORDS) + r")"
+
+
+def _count(word: str) -> int:
+    return int(word) if word.isdigit() else _COUNT_WORDS[word]
+
+
+def _rule(rule: str, instructions: str, children: list[Group | QuestionRef]) -> dict[str, Any]:
+    """Which of a group's parts count, from the rule the model gave ("any 5", "either/or") or else from the printed
+    instructions ("Answer any five questions", "Answer five questions, choosing one from each module")."""
+    parts = sum(isinstance(child, Group) for child in children)
+    for text, given in ((rule, True), (instructions, False)):
+        lowered = " ".join(text.lower().split())
+        if not lowered:
+            continue
+        each = re.search(_COUNT + r"\s+(?:full\s+)?(?:questions?\s+)?from\s+each\b", lowered)
+        min_each = _count(each.group(1)) if each and parts else 0
+        chosen = re.search(r"\b(?:any|answer|attempt)\s+(?:any\s+)?" + _COUNT + r"\b", lowered)
+        if chosen and (given or "any" in lowered or min_each):
+            count = max(_count(chosen.group(1)), 1)
+            pool = sum(len(child.children) for child in children if isinstance(child, Group)) if min_each else 0
+            if count < (pool or len(children)) or min_each:
+                return {"rule": "any", "count": count, "min_each": min_each}
+            return {"rule": "all"}
+        if given and re.search(r"\b(either|or|choice|choose)\b", lowered):
+            return {"rule": "any", "count": 1}
+        if given:
+            return {"rule": "all"}
+    return {"rule": "all"}
 
 
 def _join_numbers(parent: str, number: str) -> str:

@@ -13,6 +13,7 @@ import {
   withAnswer,
   withSummary,
 } from './exams'
+import { flatPaper } from './paper'
 
 const question = (number: string, max_marks = 2): Question => ({
   id: `id-${number}`,
@@ -58,9 +59,11 @@ const evaluation = (id: string, answers: EvaluatedAnswer[], overrides: Partial<E
   student_name: 'Asha',
   roll_number: '42',
   answers,
+  structure: flatPaper(answers.map((item) => ({ id: item.question_id }))),
   marks: 0,
   max_marks: 0,
   complete: false,
+  not_counted: [],
   ...overrides,
 })
 
@@ -91,7 +94,8 @@ describe('nextNumber', () => {
 
 describe('parseAnswerKey', () => {
   it('reads the exported format', () => {
-    const draft = { name: 'Unit test', questions: [question('1', 2), question('2', 3)] }
+    const questions = [question('1', 2), question('2', 3)]
+    const draft = { name: 'Unit test', questions, structure: flatPaper(questions) }
 
     const parsed = parseAnswerKey(JSON.stringify(answerKeyFile(draft)), 'file')
 

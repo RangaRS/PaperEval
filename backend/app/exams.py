@@ -13,8 +13,9 @@ import uuid
 from datetime import datetime
 from pathlib import Path
 
-from pydantic import BaseModel, Field, ValidationError, computed_field
+from pydantic import BaseModel, Field, ValidationError, computed_field, model_validator
 
+from .paper import Group, normalize, paper_maximum, question_order
 from .storage import ID_PATTERN, utc_now, write_json_atomic
 
 logger = logging.getLogger(__name__)
@@ -51,11 +52,24 @@ class Exam(BaseModel):
     # The subject and exam sitting this is the paper of, when it is part of the college's structure.
     subject_id: str | None = None
     sitting_id: str | None = None
+    # How the questions are grouped into sections, sub-parts and choices. Keys saved before there were
+    # groups have none, and every question counts.
+    structure: Group | None = None
+
+    @model_validator(mode="after")
+    def _arrange(self) -> Exam:
+        """Give the paper a structure holding every question once, and list the questions in its order."""
+        self.structure = normalize(self.structure, [question.id for question in self.questions])
+        by_id = {question.id: question for question in self.questions}
+        self.questions = [by_id[question_id] for question_id in question_order(self.structure)]
+        return self
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def total_marks(self) -> float:
-        return sum(question.max_marks for question in self.questions)
+        """The most marks the paper can give, counting only as many choices as a student may make."""
+        assert self.structure is not None
+        return paper_maximum(self.structure, {question.id: question.max_marks for question in self.questions})
 
 
 class ExamNotFoundError(LookupError):
@@ -95,6 +109,7 @@ class ExamStore:
         *,
         subject_id: str | None = None,
         sitting_id: str | None = None,
+        structure: Group | None = None,
     ) -> Exam:
         now = utc_now()
         exam = Exam(
@@ -105,16 +120,26 @@ class ExamStore:
             questions=_unique_ids(questions),
             subject_id=subject_id,
             sitting_id=sitting_id,
+            structure=structure,
         )
         self.root.mkdir(parents=True, exist_ok=True)
         with self._lock:
             write_json_atomic(self._path(exam.id), exam)
         return exam
 
-    def update(self, exam_id: str, name: str, questions: list[Question]) -> Exam:
+    def update(self, exam_id: str, name: str, questions: list[Question], structure: Group | None = None) -> Exam:
+        """Change the evaluator's name and questions. Without a structure, every question counts."""
         with self._lock:
             exam = self.get(exam_id)
-            exam = exam.model_copy(update={"name": name, "questions": _unique_ids(questions), "updated_at": utc_now()})
+            exam = Exam(
+                **{
+                    **exam.model_dump(exclude={"total_marks"}),
+                    "name": name,
+                    "questions": _unique_ids(questions),
+                    "structure": structure,
+                    "updated_at": utc_now(),
+                }
+            )
             write_json_atomic(self._path(exam_id), exam)
         return exam
 

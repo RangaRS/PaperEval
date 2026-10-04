@@ -56,6 +56,7 @@ const evaluation = (marks: (number | null)[]): EvaluationSummary => ({
   marks: 0,
   max_marks: 0,
   complete: marks.every((value) => value !== null),
+  not_counted: [],
   answers: marks.map((value, index) => ({
     question_id: `q${index}`,
     number: String(index + 1),

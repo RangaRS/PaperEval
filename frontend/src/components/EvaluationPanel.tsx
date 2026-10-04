@@ -266,6 +266,7 @@ export function EvaluationPanel({
                     answer={answer}
                     index={index}
                     question={questions.get(answer.question_id)}
+                    notCounted={evaluation.not_counted.includes(answer.question_id)}
                     marking={marking.has(answer.question_id)}
                     busy={running}
                     preview={preview}
@@ -386,6 +387,7 @@ function AnswerCard({
   answer,
   index,
   question,
+  notCounted,
   marking,
   busy,
   preview,
@@ -398,6 +400,8 @@ function AnswerCard({
   answer: EvaluatedAnswer
   index: number
   question: Question | undefined
+  /** Whether the answer's marks do not count, because the student's other choices gave more. */
+  notCounted: boolean
   marking: boolean
   busy: boolean
   preview: boolean
@@ -418,7 +422,9 @@ function AnswerCard({
         ? { text: 'Could not mark', className: 'is-error' }
         : answer.status === 'pending'
           ? { text: 'Not marked', className: 'is-pending' }
-          : null
+          : notCounted
+            ? { text: 'Not counted: another choice scored higher', className: 'is-not-counted' }
+            : null
 
   const save = async () => {
     if (editing === null) return

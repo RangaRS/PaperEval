@@ -3766,3 +3766,153 @@ a.btn {
     flex-basis: auto;
   }
 }
+
+/* The paper's layout in the key editor: sections, sub-parts and choices */
+
+.group-card {
+  padding: 12px 14px 14px;
+  border: 1px solid var(--border-strong);
+  border-left: 3px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: var(--surface-2);
+}
+
+.group-card.is-choice {
+  border-left-color: var(--accent);
+}
+
+.group-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+}
+
+.group-card-head .question-card-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.question-card-actions .btn-small {
+  margin-right: 2px;
+}
+
+.count-input {
+  flex: none;
+  width: 56px;
+  font-family: var(--font);
+}
+
+.group-rule {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  margin: 10px 0;
+  font-size: 12.5px;
+}
+
+.rule-chip {
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  font-weight: 600;
+  color: var(--accent-soft-text);
+}
+
+.group-children {
+  margin: 12px 0 0;
+}
+
+.add-in-group {
+  margin-top: 10px;
+  border-style: dashed;
+  background: transparent;
+}
+
+.paper-add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.paper-add .add-question {
+  flex: 1 1 160px;
+  width: auto;
+}
+
+.pattern-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+}
+
+.pattern-kinds {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+}
+
+.pattern-kind {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.pattern-kind input {
+  grid-row: span 2;
+  margin: 2px 0 0;
+}
+
+.pattern-kind .muted {
+  font-size: 12px;
+}
+
+.pattern-kind.is-active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.pattern-fields {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+}
+
+.pattern-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pattern-actions .muted {
+  margin-right: auto;
+  font-size: 12.5px;
+}
+
+/* Answers whose marks do not count, because another choice scored higher */
+
+.answer-card.is-not-counted {
+  border-left-color: var(--border-strong);
+  opacity: 0.75;
+}
+
+.is-not-counted .answer-status {
+  color: var(--warning);
+}
+
+.results-table td.is-not-counted {
+  color: var(--faint);
+  text-decoration: line-through;
+}

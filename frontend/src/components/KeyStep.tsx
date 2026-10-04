@@ -1,13 +1,14 @@
 import { Eye, FileJson, FileText, RotateCcw, Square, TriangleAlert, Upload, X } from 'lucide-react'
 import { useRef } from 'react'
 
-import type { DocumentInfo, Question } from '../api'
+import type { DocumentInfo } from '../api'
 import { isKeyReading, type KeyRead } from '../evaluator'
-import { formatMarks, totalMarks } from '../exams'
+import { formatMarks } from '../exams'
 import type { OcrJob } from '../ocrQueue'
 import { pluralize } from '../utils'
 import { KeyReadProgress } from './KeyReadProgress'
-import { QuestionsEditor } from './QuestionsEditor'
+import { maximum } from '../paper'
+import { type Paper, QuestionsEditor } from './QuestionsEditor'
 import { UploadZone } from './UploadButton'
 import { UseEarlierUpload } from './UseEarlierUpload'
 
@@ -21,8 +22,8 @@ interface KeyStepProps {
   gradingModel: string
   accept: string[]
   uploading: boolean
-  questions: Question[]
-  onQuestionsChange: (questions: Question[]) => void
+  paper: Paper
+  onPaperChange: (paper: Paper) => void
   onUploadKey: (files: File[]) => void
   onUseDocument: (documentId: string) => void
   /** Read the questions from the key file; with `extractAll`, extract every page's text again first. */
@@ -43,8 +44,8 @@ export function KeyStep({
   gradingModel,
   accept,
   uploading,
-  questions,
-  onQuestionsChange,
+  paper,
+  onPaperChange,
   onUploadKey,
   onUseDocument,
   onReadKey,
@@ -53,6 +54,7 @@ export function KeyStep({
   onViewKeyPages,
   onImportJson,
 }: KeyStepProps) {
+  const { questions, structure } = paper
   const replaceInput = useRef<HTMLInputElement>(null)
   const jsonInput = useRef<HTMLInputElement>(null)
   const reading = isKeyReading(keyRead)
@@ -175,7 +177,7 @@ export function KeyStep({
         <header className="step-card-header">
           <h2>Questions</h2>
           <span className="muted">
-            {pluralize(questions.length, 'question')} · {formatMarks(totalMarks(questions))} marks
+            {pluralize(questions.length, 'question')} · {formatMarks(maximum(structure, questions))} marks
           </span>
           {unmarked > 0 && (
             <span className="exam-meta-warning">
@@ -213,7 +215,7 @@ export function KeyStep({
               : 'The questions appear here once the key file is read. You can also type them in yourself.'}
           </p>
         )}
-        <QuestionsEditor questions={questions} onChange={onQuestionsChange} />
+        <QuestionsEditor questions={questions} structure={structure} onChange={onPaperChange} />
       </section>
     </div>
   )

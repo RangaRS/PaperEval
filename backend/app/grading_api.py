@@ -51,6 +51,7 @@ from .grading import (
     read_answer_key,
 )
 from .ollama import OllamaClient, OllamaError, UnusableReplyError
+from .paper import Group
 from .storage import DocumentNotFoundError, StoredDocument
 
 logger = logging.getLogger("uvicorn.error")
@@ -61,6 +62,8 @@ router = APIRouter(prefix="/api")
 class ExamIn(BaseModel):
     name: str = Field(default="", max_length=200)
     questions: list[Question] = Field(default=[], max_length=500)
+    # How the questions are grouped into sections, sub-parts and choices. Leave it out for every question to count.
+    structure: Group | None = None
 
 
 class NewExamIn(ExamIn):
@@ -146,6 +149,8 @@ class EvaluationSummary(BaseModel):
     marks: float
     max_marks: float
     complete: bool
+    # Questions whose marks do not count, because the student's other choices gave more.
+    not_counted: list[str]
     answers: list[AnswerSummary]
 
 
@@ -177,6 +182,7 @@ def create_exam(body: NewExamIn, exams: ExamStoreDep, catalog: CatalogStoreDep) 
         body.questions,
         subject_id=body.subject_id,
         sitting_id=body.sitting_id,
+        structure=body.structure,
     )
 
 
@@ -238,7 +244,7 @@ async def create_exam_from_document(
 
     def save(key: AnswerKey) -> Exam:
         name = body.name.strip() or key.name or PurePath(document.filename).stem or "Evaluator"
-        return exams.create(name, key.questions)
+        return exams.create(name, key.questions, structure=key.structure)
 
     return ndjson_response(
         _answer_key_events(ollama=ollama, document=document, model=model, num_ctx=settings.ollama_num_ctx, save=save)
@@ -252,6 +258,7 @@ async def read_exam_key(
     settings: SettingsDep,
     store: StoreDep,
     exams: ExamStoreDep,
+    evaluations: EvaluationStoreDep,
     ollama: OllamaDep,
 ) -> StreamingResponse:
     """Read an evaluator's questions from its key file with an AI model, replacing any questions it had.
@@ -276,7 +283,9 @@ async def read_exam_key(
         name = current.name
         if name.strip() in PLACEHOLDER_NAMES:
             name = key.name or PurePath(document.filename).stem or "Evaluator"
-        return exams.update(exam_id, name, key.questions)
+        exam = exams.update(exam_id, name, key.questions, key.structure)
+        evaluations.follow_key(exam)
+        return exam
 
     return ndjson_response(
         _answer_key_events(ollama=ollama, document=document, model=model, num_ctx=settings.ollama_num_ctx, save=save)
@@ -318,11 +327,14 @@ def get_exam(exam_id: str, exams: ExamStoreDep) -> Exam:
 
 
 @router.put("/exams/{exam_id}")
-def update_exam(exam_id: str, body: ExamIn, exams: ExamStoreDep) -> Exam:
+def update_exam(exam_id: str, body: ExamIn, exams: ExamStoreDep, evaluations: EvaluationStoreDep) -> Exam:
     try:
-        return exams.update(exam_id, body.name.strip() or "Untitled evaluator", body.questions)
+        exam = exams.update(exam_id, body.name.strip() or "Untitled evaluator", body.questions, body.structure)
     except ExamNotFoundError:
         raise HTTPException(404, "Evaluator not found.") from None
+    # Totals already worked out follow the key's new sections and choices.
+    evaluations.follow_key(exam)
+    return exam
 
 
 @router.delete("/exams/{exam_id}", status_code=204)
@@ -350,8 +362,15 @@ def download_results(exam_id: str, exams: ExamStoreDep, evaluations: EvaluationS
         f"{label} (/{format_marks(question.max_marks)})"
         for label, question in zip(question_labels(exam.questions), exam.questions, strict=True)
     ]
-    writer.writerow(["Paper", "Student", "Roll number", *columns, "Total", "Out of", "Fully marked"])
+    labels = dict(zip((question.id for question in exam.questions), question_labels(exam.questions), strict=True))
+    writer.writerow(["Paper", "Student", "Roll number", *columns, "Total", "Out of", "Not counted", "Fully marked"])
     for evaluation in sorted(evaluations.list_evaluations(exam_id=exam_id), key=_result_order):
+        # Choices the student made whose marks do not count, because their other choices gave more.
+        dropped = [
+            labels.get(answer.question_id, answer.number)
+            for answer in evaluation.answers
+            if answer.question_id in evaluation.not_counted and answer.status != "unanswered"
+        ]
         marks = []
         for question in exam.questions:
             answer = evaluation.answer(question.id)
@@ -364,6 +383,7 @@ def download_results(exam_id: str, exams: ExamStoreDep, evaluations: EvaluationS
                 *marks,
                 format_marks(evaluation.marks),
                 format_marks(evaluation.max_marks),
+                ", ".join(dropped),
                 "yes" if evaluation.complete else "no",
             ]
         )
@@ -566,6 +586,7 @@ def _summary(evaluation: Evaluation) -> EvaluationSummary:
         marks=evaluation.marks,
         max_marks=evaluation.max_marks,
         complete=evaluation.complete,
+        not_counted=evaluation.not_counted,
         answers=[
             AnswerSummary(
                 question_id=answer.question_id,

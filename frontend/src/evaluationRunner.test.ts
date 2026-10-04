@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { EvaluatedAnswer, Evaluation, EvaluationEvent } from './api'
 import { EvaluationRunner, type EvaluateRequest, type GradeRequest } from './evaluationRunner'
+import { flatPaper } from './paper'
 
 const answer = (id: string, status: EvaluatedAnswer['status'], marks: number | null = null): EvaluatedAnswer => ({
   question_id: id,
@@ -31,9 +32,11 @@ const evaluation = (documentId: string, answers: EvaluatedAnswer[]): Evaluation 
   student_name: '',
   roll_number: '',
   answers,
+  structure: flatPaper(answers.map((answer) => ({ id: answer.question_id }))),
   marks: 0,
   max_marks: answers.length * 5,
   complete: false,
+  not_counted: [],
 })
 
 /** Event streams that the test feeds by hand, one per document. */

@@ -123,11 +123,18 @@ export function ResultsStep({
                     {exam.questions.map((question) => {
                       const answer = answers.get(question.id)
                       const marks = answer?.marks
+                      const dropped = answer?.status !== 'unanswered' && evaluation.not_counted.includes(question.id)
                       return (
                         <td
                           key={question.id}
-                          className={`num${answer?.status === 'unanswered' ? ' is-unanswered' : ''}`}
-                          title={answer?.status === 'unanswered' ? 'Not answered' : undefined}
+                          className={`num${answer?.status === 'unanswered' ? ' is-unanswered' : ''}${dropped ? ' is-not-counted' : ''}`}
+                          title={
+                            answer?.status === 'unanswered'
+                              ? 'Not answered'
+                              : dropped
+                                ? 'Not counted: another choice scored higher'
+                                : undefined
+                          }
                         >
                           {marks === null || marks === undefined ? '–' : formatMarks(marks)}
                         </td>

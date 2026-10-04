@@ -7,7 +7,7 @@ import { answerKeyFile } from '../exams'
 import { downloadText, errorMessage, pluralize } from '../utils'
 import { ModelSelect } from './ModelSelect'
 
-const toDraft = (exam: Exam): ExamDraft => ({ name: exam.name, questions: exam.questions })
+const toDraft = (exam: Exam): ExamDraft => ({ name: exam.name, questions: exam.questions, structure: exam.structure })
 const sameDraft = (a: ExamDraft, b: ExamDraft) => JSON.stringify(a) === JSON.stringify(b)
 
 interface EvaluatorViewProps {
@@ -85,6 +85,7 @@ export function EvaluatorView({
       const saved = await api.updateExam(exam.id, {
         name: draft.name.trim() || 'Untitled evaluator',
         questions: draft.questions,
+        structure: draft.structure,
       })
       setSynced(saved.updated_at)
       setDraft(toDraft(saved))

@@ -647,7 +647,7 @@ export default function App() {
     try {
       const draft = parseAnswerKey(await file.text(), fileStem(file.name))
       const name = exam.name === 'Untitled evaluator' ? draft.name : exam.name
-      const saved = await api.updateExam(examId, { name, questions: draft.questions })
+      const saved = await api.updateExam(examId, { name, questions: draft.questions, structure: draft.structure })
       editorDirty.current = false
       examSaved(saved)
       notify(`Imported ${pluralize(saved.questions.length, 'question')}.`, 'info')
@@ -998,8 +998,8 @@ export default function App() {
               gradingModel={gradingModel}
               accept={accepted}
               uploading={uploadingHere && upload?.role === 'key'}
-              questions={draft.questions}
-              onQuestionsChange={(questions) => change({ questions })}
+              paper={draft}
+              onPaperChange={(paper) => change(paper)}
               onUploadKey={(files) => uploadKey(examId, files)}
               onUseDocument={(documentId) => void assignEarlierFile(examId, documentId, 'key')}
               onReadKey={(extractAll) => keyDocument && void readKey(examId, keyDocument.id, extractAll)}

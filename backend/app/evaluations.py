@@ -14,11 +14,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ValidationError, computed_field
+from pydantic import BaseModel, ValidationError, computed_field, model_validator
 
 from .exams import Exam, ExamStore, Question
 from .grading import Progress, document_text, mark_answer, progress_events, split_answers
 from .ollama import OllamaClient, OllamaError, UnusableReplyError
+from .paper import Group, Tally, normalize, shared_texts, tally
 from .storage import ID_PATTERN, DocumentStore, StoredDocument, utc_now, write_json_atomic
 
 logger = logging.getLogger("uvicorn.error")
@@ -74,16 +75,43 @@ class Evaluation(BaseModel):
     student_name: str = ""
     roll_number: str = ""
     answers: list[EvaluatedAnswer]
+    # The answer key's sections, sub-parts and choices, which say which answers count. Copied from
+    # the key, and kept in step with it.
+    structure: Group | None = None
+
+    @model_validator(mode="after")
+    def _arrange(self) -> Evaluation:
+        self.structure = normalize(self.structure, [answer.question_id for answer in self.answers])
+        return self
+
+    def _tally(self) -> Tally:
+        assert self.structure is not None
+        answers = {answer.question_id: answer for answer in self.answers}
+        return tally(
+            self.structure,
+            lambda question_id: answers[question_id].marks or 0,
+            lambda question_id: answers[question_id].status != "unanswered" and bool(answers[question_id].answer),
+        )
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def marks(self) -> float:
-        return sum(answer.marks or 0 for answer in self.answers)
+        """The student's total, counting only the best of the choices they made."""
+        return self._tally().marks
 
     @computed_field  # type: ignore[prop-decorator]
     @property
     def max_marks(self) -> float:
-        return sum(answer.max_marks for answer in self.answers)
+        assert self.structure is not None
+        answers = {answer.question_id: answer for answer in self.answers}
+        return tally(self.structure, lambda question_id: answers[question_id].max_marks).marks
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def not_counted(self) -> list[str]:
+        """The questions whose marks do not count, because the student's other choices gave more."""
+        counted = set(self._tally().counted)
+        return [answer.question_id for answer in self.answers if answer.question_id not in counted]
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -93,6 +121,10 @@ class Evaluation(BaseModel):
 
     def answer(self, question_id: str) -> EvaluatedAnswer | None:
         return next((answer for answer in self.answers if answer.question_id == question_id), None)
+
+    def with_structure(self, structure: Group | None) -> Evaluation:
+        """The evaluation with the answer key's current sections and choices."""
+        return Evaluation.model_validate({**self.model_dump(), "structure": structure})
 
 
 class EvaluationNotFoundError(LookupError):
@@ -171,6 +203,15 @@ class EvaluationStore:
                 self._path(evaluation_id).unlink()
             except FileNotFoundError:
                 raise EvaluationNotFoundError(evaluation_id) from None
+
+    def follow_key(self, exam: Exam) -> None:
+        """Count the marks of every evaluation against the answer key the way it is now laid out."""
+        for evaluation in self.list_evaluations(exam_id=exam.id):
+            if evaluation.structure != exam.structure:
+                try:
+                    self.update(evaluation.id, lambda current: current.with_structure(exam.structure))
+                except EvaluationNotFoundError:
+                    continue
 
     def delete_where(self, *, document_id: str | None = None, exam_id: str | None = None) -> int:
         """Delete the evaluations of a document or for an answer key. Returns how many were deleted."""
@@ -279,6 +320,7 @@ async def evaluation_events(
         student_name=script.student_name,
         roll_number=script.roll_number,
         answers=answers,
+        structure=exam.structure,
     )
     await asyncio.to_thread(store.add, evaluation)
     yield {"type": "split", "evaluation": evaluation.model_dump(mode="json")}
@@ -313,7 +355,14 @@ async def grading_events(
     ``answer`` each time an answer has been marked (or could not be), then
     ``done`` with the evaluation, or ``error`` if marking had to stop.
     """
-    questions = {question.id: question for question in exam.questions}
+    questions = {question.id: with_shared_text(question, exam) for question in exam.questions}
+    try:
+        evaluation = await asyncio.to_thread(
+            store.update, evaluation.id, lambda current: current.with_structure(exam.structure)
+        )
+    except EvaluationNotFoundError:
+        yield {"type": "error", "message": "The evaluation was deleted before it could be marked."}
+        return
     if question_ids is None:
         chosen = [answer for answer in evaluation.answers if answer.marks is None]
     else:
@@ -369,6 +418,16 @@ async def grading_events(
         for task in tasks:
             task.cancel()
     yield {"type": "done", "evaluation": evaluation.model_dump(mode="json")}
+
+
+def with_shared_text(question: Question, exam: Exam) -> Question:
+    """The question with the text of the sections and questions it is part of, such as a stem shared by its
+    sub-parts, leaving out any its own text already has."""
+    assert exam.structure is not None
+    shared = [text for text in shared_texts(exam.structure).get(question.id, []) if text not in question.question]
+    if not shared:
+        return question
+    return question.model_copy(update={"question": "\n\n".join([*shared, question.question])})
 
 
 def question_labels(questions: Iterable[Question]) -> list[str]:

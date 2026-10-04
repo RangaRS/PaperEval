@@ -81,6 +81,32 @@ export interface Question {
   max_marks: number
 }
 
+/** A question's place in the paper. */
+export interface QuestionRef {
+  kind: 'question'
+  question_id: string
+}
+
+/** A section, a question with sub-parts, or a choice: questions and groups with a rule saying which of them count. */
+export interface PaperGroup {
+  kind: 'group'
+  id: string
+  /** Its name as printed, e.g. "Part B" or "11". */
+  label: string
+  /** Its instructions, or text its questions share. */
+  text: string
+  /** `all`: every child counts. `any`: the best `count` of them count. */
+  rule: 'all' | 'any'
+  count: number
+  /** For `any`: pool the children of each child group, taking at least this many from each. 0 for none. */
+  min_each: number
+  /** The most marks the group can give; 0 for no limit. */
+  cap: number
+  children: PaperNode[]
+}
+
+export type PaperNode = PaperGroup | QuestionRef
+
 /** An evaluator: an exam's questions with their model answers, marking keys and marks. */
 export interface Exam {
   id: string
@@ -88,6 +114,9 @@ export interface Exam {
   created_at: string
   updated_at: string
   questions: Question[]
+  /** How the questions are grouped into sections, sub-parts and choices. */
+  structure: PaperGroup
+  /** The most marks the paper can give, counting only as many choices as a student may make. */
   total_marks: number
   /** The uploaded question paper with its answers and marking scheme. */
   key_document_id: string | null
@@ -167,6 +196,7 @@ export type CatalogItemIn<C extends CatalogCollection> = Omit<Catalog[C][number]
 export interface ExamDraft {
   name: string
   questions: Question[]
+  structure: PaperGroup
 }
 
 export type AnswerStatus = 'pending' | 'graded' | 'unanswered' | 'error'
@@ -202,9 +232,13 @@ export interface Evaluation {
   student_name: string
   roll_number: string
   answers: EvaluatedAnswer[]
+  /** The answer key's sections and choices, which say which answers count. */
+  structure: PaperGroup
   marks: number
   max_marks: number
   complete: boolean
+  /** Questions whose marks do not count, because the student's other choices gave more. */
+  not_counted: string[]
 }
 
 export interface AnswerSummary {
@@ -215,7 +249,7 @@ export interface AnswerSummary {
   max_marks: number
 }
 
-export interface EvaluationSummary extends Omit<Evaluation, 'answers'> {
+export interface EvaluationSummary extends Omit<Evaluation, 'answers' | 'structure'> {
   answers: AnswerSummary[]
 }
 
@@ -336,7 +370,7 @@ export const api = {
 
   getExam: (examId: string) => request<Exam>(`/api/exams/${examId}`),
 
-  createExam: (draft: ExamDraft & Partial<Placement>) => request<Exam>('/api/exams', jsonBody(draft)),
+  createExam: (draft: Omit<ExamDraft, 'structure'> & Partial<Pick<ExamDraft, 'structure'>> & Partial<Placement>) => request<Exam>('/api/exams', jsonBody(draft)),
 
   /** Make an evaluator a subject's paper in an exam sitting, or (with nulls) take it out of the structure. */
   placeExam: (examId: string, placement: Placement) =>

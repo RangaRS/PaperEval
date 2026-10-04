@@ -496,10 +496,21 @@ def test_the_results_can_be_downloaded_as_a_spreadsheet(
     assert response.content.startswith("\ufeff".encode())
     rows = list(csv.reader(io.StringIO(response.content.decode("utf-8-sig"))))
     assert rows == [
-        ["Paper", "Student", "Roll number", "Q1 (/2)", "Q2 (/3)", "Q3 (/5)", "Total", "Out of", "Fully marked"],
+        [
+            "Paper",
+            "Student",
+            "Roll number",
+            "Q1 (/2)",
+            "Q2 (/3)",
+            "Q3 (/5)",
+            "Total",
+            "Out of",
+            "Not counted",
+            "Fully marked",
+        ],
         # In roll number order, with text that looks like a formula made harmless.
-        ["ravi.pdf", '\'=HYPERLINK("http://example.com")', "21CS007", "0", "1.5", "0", "1.5", "10", "yes"],
-        ["asha.pdf", "Asha", "21CS042", "2", "0", "2.5", "4.5", "10", "yes"],
+        ["ravi.pdf", '\'=HYPERLINK("http://example.com")', "21CS007", "0", "1.5", "0", "1.5", "10", "", "yes"],
+        ["asha.pdf", "Asha", "21CS042", "2", "0", "2.5", "4.5", "10", "", "yes"],
     ]
     assert client.get(f"/api/exams/{'0' * 32}/results.csv").status_code == 404
 
