@@ -1,30 +1,47 @@
-import { ClipboardCheck, Plus } from 'lucide-react'
+import { ClipboardCheck, Network, Plus, Sparkles } from 'lucide-react'
 
-/** Shown while there is no evaluator: what the app does, and how to start. */
-export function Welcome({ loading, onCreate }: { loading: boolean; onCreate: () => void }) {
+interface WelcomeProps {
+  loading: boolean
+  onLoadSample: () => void
+  onOpenStructure: () => void
+  onCreate: () => void
+}
+
+/** Shown before anything is set up: what the app does, and three ways to start. */
+export function Welcome({ loading, onLoadSample, onOpenStructure, onCreate }: WelcomeProps) {
   return (
-    <div className="empty-state welcome">
-      <ClipboardCheck size={40} strokeWidth={1.5} aria-hidden />
-      <h2>Mark answer papers with AI</h2>
-      <ol className="welcome-steps">
-        <li>
-          <strong>Create an evaluator</strong> and upload the question paper with its answer key. The text of every page
-          is extracted, and the AI lists each question with its model answer, marking key and marks. You can check and
-          correct them.
-        </li>
-        <li>
-          <strong>Upload the students' answer papers</strong> into it, one PDF per student. Each one is read page by
-          page, split into answers, and every answer is marked against the key.
-        </li>
-        <li>
-          <strong>Check the marks</strong> next to each paper's pages, change any you disagree with, and download
-          everyone's results.
-        </li>
-      </ol>
-      <button type="button" className="btn btn-primary btn-large" onClick={onCreate} disabled={loading}>
-        <Plus size={16} aria-hidden />
-        New evaluator
-      </button>
+    <div className="welcome">
+      <div className="welcome-intro">
+        <ClipboardCheck size={40} strokeWidth={1.5} aria-hidden />
+        <h2>Mark answer papers with AI</h2>
+        <p className="muted">
+          Upload a subject's question paper with its answer key, then the students' answer papers. Every answer is read
+          and marked against the key, and you check each mark next to the student's handwriting.
+        </p>
+      </div>
+      <div className="welcome-options">
+        <button type="button" className="welcome-option is-featured" onClick={onLoadSample} disabled={loading}>
+          <Sparkles size={22} aria-hidden />
+          <span className="welcome-option-title">Explore a sample college</span>
+          <span className="welcome-option-text">
+            Departments, programmes, semesters, subjects and exam sittings, set up and ready to try.
+          </span>
+        </button>
+        <button type="button" className="welcome-option" onClick={onOpenStructure} disabled={loading}>
+          <Network size={22} aria-hidden />
+          <span className="welcome-option-title">Set up your college</span>
+          <span className="welcome-option-text">
+            Add your departments, programmes and the subjects of each semester, then mark each subject's papers.
+          </span>
+        </button>
+        <button type="button" className="welcome-option" onClick={onCreate} disabled={loading}>
+          <Plus size={22} aria-hidden />
+          <span className="welcome-option-title">Just mark one test</span>
+          <span className="welcome-option-text">
+            Create a single evaluator for a quick test. You can file it under a subject later.
+          </span>
+        </button>
+      </div>
     </div>
   )
 }

@@ -16,6 +16,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from .catalog import CatalogStore
 from .config import Settings
 from .evaluations import EvaluationStore
 from .exams import ExamNotFoundError, ExamStore
@@ -49,11 +50,16 @@ def get_evaluation_store(request: Request) -> EvaluationStore:
     return request.app.state.evaluation_store
 
 
+def get_catalog_store(request: Request) -> CatalogStore:
+    return request.app.state.catalog_store
+
+
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 StoreDep = Annotated[DocumentStore, Depends(get_store)]
 OllamaDep = Annotated[OllamaClient, Depends(get_ollama)]
 ExamStoreDep = Annotated[ExamStore, Depends(get_exam_store)]
 EvaluationStoreDep = Annotated[EvaluationStore, Depends(get_evaluation_store)]
+CatalogStoreDep = Annotated[CatalogStore, Depends(get_catalog_store)]
 
 
 class PageOut(BaseModel):

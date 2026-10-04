@@ -19,6 +19,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from .api import (
+    CatalogStoreDep,
     EvaluationStoreDep,
     ExamStoreDep,
     OllamaDep,
@@ -62,6 +63,19 @@ class ExamIn(BaseModel):
     questions: list[Question] = Field(default=[], max_length=500)
 
 
+class NewExamIn(ExamIn):
+    # The subject and exam sitting the new evaluator is the paper of, if any.
+    subject_id: str | None = None
+    sitting_id: str | None = None
+
+
+class ExamPlacement(BaseModel):
+    """The subject and exam sitting an evaluator is the paper of, or neither (both null)."""
+
+    subject_id: str | None = None
+    sitting_id: str | None = None
+
+
 class ExamSummary(BaseModel):
     id: str
     name: str
@@ -73,6 +87,8 @@ class ExamSummary(BaseModel):
     unmarked_questions: list[str]
     # The uploaded question paper with its answers and marking scheme.
     key_document_id: str | None
+    subject_id: str | None
+    sitting_id: str | None
 
 
 class ReadKeyRequest(BaseModel):
@@ -145,15 +161,55 @@ def list_exams(exams: ExamStoreDep) -> list[ExamSummary]:
             total_marks=exam.total_marks,
             unmarked_questions=_unmarked_questions(exam),
             key_document_id=exam.key_document_id,
+            subject_id=exam.subject_id,
+            sitting_id=exam.sitting_id,
         )
         for exam in exams.list_exams()
     ]
 
 
 @router.post("/exams", status_code=201)
-def create_exam(body: ExamIn, exams: ExamStoreDep) -> Exam:
-    """Save a new evaluator, with any questions it already has."""
-    return exams.create(body.name.strip() or "Untitled evaluator", body.questions)
+def create_exam(body: NewExamIn, exams: ExamStoreDep, catalog: CatalogStoreDep) -> Exam:
+    """Save a new evaluator, with any questions it already has, optionally as a subject's paper in a sitting."""
+    _check_placement(catalog, exams, body.subject_id, body.sitting_id)
+    return exams.create(
+        body.name.strip() or "Untitled evaluator",
+        body.questions,
+        subject_id=body.subject_id,
+        sitting_id=body.sitting_id,
+    )
+
+
+@router.patch("/exams/{exam_id}/placement")
+def place_exam(exam_id: str, body: ExamPlacement, exams: ExamStoreDep, catalog: CatalogStoreDep) -> Exam:
+    """Make an evaluator the paper of a subject in an exam sitting, or take it out of the structure."""
+    _load_exam(exams, exam_id)
+    _check_placement(catalog, exams, body.subject_id, body.sitting_id, exam_id=exam_id)
+    return exams.place(exam_id, body.subject_id, body.sitting_id)
+
+
+def _check_placement(
+    catalog: CatalogStoreDep,
+    exams: ExamStore,
+    subject_id: str | None,
+    sitting_id: str | None,
+    *,
+    exam_id: str | None = None,
+) -> None:
+    if subject_id is None and sitting_id is None:
+        return
+    if subject_id is None or sitting_id is None:
+        raise HTTPException(422, "Choose both the subject and the exam sitting.")
+    structure = catalog.get()
+    subject = structure.subject(subject_id)
+    sitting = structure.sitting(sitting_id)
+    if subject is None:
+        raise HTTPException(422, "That subject does not exist.")
+    if sitting is None:
+        raise HTTPException(422, "That exam sitting does not exist.")
+    for other in exams.list_exams():
+        if other.id != exam_id and other.subject_id == subject_id and other.sitting_id == sitting_id:
+            raise HTTPException(409, f"{subject.name} already has a paper for {sitting.name}: {other.name}.")
 
 
 @router.post("/exams/from-document")

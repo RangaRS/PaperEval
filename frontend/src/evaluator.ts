@@ -42,6 +42,8 @@ export const summaryOf = (exam: Exam): ExamSummary => ({
     question.max_marks <= 0 ? [questionLabel(question.number, index)] : [],
   ),
   key_document_id: exam.key_document_id,
+  subject_id: exam.subject_id,
+  sitting_id: exam.sitting_id,
 })
 
 /** Why answer papers can't be marked against this evaluator yet, or null when they can. */

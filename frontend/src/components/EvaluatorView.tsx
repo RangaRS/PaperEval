@@ -26,6 +26,8 @@ interface EvaluatorViewProps {
   onDelete: () => void
   onDirtyChange: (dirty: boolean) => void
   onError: (message: string) => void
+  /** Where the evaluator sits in the college, shown above its name. */
+  context?: ReactNode
   /** The content of each step, given the questions being edited. */
   children: (draft: ExamDraft, change: (changes: Partial<ExamDraft>) => void, dirty: boolean) => ReactNode
 }
@@ -46,6 +48,7 @@ export function EvaluatorView({
   onDelete,
   onDirtyChange,
   onError,
+  context,
   children,
 }: EvaluatorViewProps) {
   const [draft, setDraft] = useState<ExamDraft | null>(exam ? toDraft(exam) : null)
@@ -123,6 +126,7 @@ export function EvaluatorView({
   return (
     <section className="exam-editor" onKeyDown={onKeyDown} aria-label={`Evaluator ${exam.name}`}>
       <div className="exam-header">
+        {context && <div className="exam-context">{context}</div>}
         <div className="exam-title">
           <input
             className="exam-name"

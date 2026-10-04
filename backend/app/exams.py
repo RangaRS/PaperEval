@@ -48,6 +48,9 @@ class Exam(BaseModel):
     questions: list[Question]
     # The uploaded question paper with its answers and marking scheme.
     key_document_id: str | None = None
+    # The subject and exam sitting this is the paper of, when it is part of the college's structure.
+    subject_id: str | None = None
+    sitting_id: str | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property
@@ -85,9 +88,24 @@ class ExamStore:
         except FileNotFoundError:
             raise ExamNotFoundError(exam_id) from None
 
-    def create(self, name: str, questions: list[Question]) -> Exam:
+    def create(
+        self,
+        name: str,
+        questions: list[Question],
+        *,
+        subject_id: str | None = None,
+        sitting_id: str | None = None,
+    ) -> Exam:
         now = utc_now()
-        exam = Exam(id=uuid.uuid4().hex, name=name, created_at=now, updated_at=now, questions=_unique_ids(questions))
+        exam = Exam(
+            id=uuid.uuid4().hex,
+            name=name,
+            created_at=now,
+            updated_at=now,
+            questions=_unique_ids(questions),
+            subject_id=subject_id,
+            sitting_id=sitting_id,
+        )
         self.root.mkdir(parents=True, exist_ok=True)
         with self._lock:
             write_json_atomic(self._path(exam.id), exam)
@@ -104,6 +122,14 @@ class ExamStore:
         with self._lock:
             exam = self.get(exam_id)
             exam = exam.model_copy(update={"key_document_id": document_id, "updated_at": utc_now()})
+            write_json_atomic(self._path(exam_id), exam)
+        return exam
+
+    def place(self, exam_id: str, subject_id: str | None, sitting_id: str | None) -> Exam:
+        """Make the evaluator the paper of a subject in an exam sitting, or of none."""
+        with self._lock:
+            exam = self.get(exam_id)
+            exam = exam.model_copy(update={"subject_id": subject_id, "sitting_id": sitting_id, "updated_at": utc_now()})
             write_json_atomic(self._path(exam_id), exam)
         return exam
 

@@ -11,7 +11,13 @@ with **Ollama Cloud** models or a local Ollama.
 
 ## Features
 
-- **Evaluators.** One per exam. Each has its question paper with the answer key, its questions, its students'
+- **Organised like a college.** Set up departments, their programmes (in semesters or years) and the subjects of
+  each term, and the exam sittings, such as "Nov/Dec 2026" or "Internal test 1". The sidebar shows every subject for
+  the chosen sitting, with how far its paper has got. Overviews of the whole college, a department, a programme or a
+  semester show which subjects have a paper and how many answer papers are marked. **Try a sample college** sets up a
+  made-up one to explore. Evaluators that aren't a subject's paper still work on their own, and can be filed under a
+  subject later.
+- **Evaluators.** One per exam, or per subject in each exam sitting. Each has its question paper with the answer key, its questions, its students'
   answer papers and their results, in three steps: **1. Questions & key**, **2. Answer papers** and **3. Results**.
 - **Questions read from the key file.** Upload the question paper with its answers and marking scheme (a PDF or
   images). The text of every page is extracted, one page at a time, and then an AI model lists each question with

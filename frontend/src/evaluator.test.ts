@@ -122,6 +122,8 @@ describe('keyProblem', () => {
     total_marks: 10,
     unmarked_questions: [],
     key_document_id: null,
+    subject_id: null,
+    sitting_id: null,
     ...changes,
   })
 

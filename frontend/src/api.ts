@@ -91,6 +91,9 @@ export interface Exam {
   total_marks: number
   /** The uploaded question paper with its answers and marking scheme. */
   key_document_id: string | null
+  /** The subject and exam sitting this is the paper of, when it is part of the college's structure. */
+  subject_id: string | null
+  sitting_id: string | null
 }
 
 export interface ExamSummary {
@@ -103,7 +106,63 @@ export interface ExamSummary {
   /** Questions without marks, which need them before scripts can be evaluated. */
   unmarked_questions: string[]
   key_document_id: string | null
+  subject_id: string | null
+  sitting_id: string | null
 }
+
+/** Where an evaluator belongs: a subject's paper in an exam sitting, or neither (both null). */
+export interface Placement {
+  subject_id: string | null
+  sitting_id: string | null
+}
+
+export type TermType = 'semester' | 'year'
+export type SittingKind = 'internal' | 'model' | 'end_term' | 'supplementary' | 'other'
+
+export interface Department {
+  id: string
+  name: string
+  code: string
+}
+
+export interface Programme {
+  id: string
+  department_id: string
+  name: string
+  code: string
+  /** Taught in semesters or in years, and how many. */
+  term_type: TermType
+  term_count: number
+}
+
+export interface Subject {
+  id: string
+  programme_id: string
+  /** The semester (or year) of the programme it is taught in, from 1. */
+  term: number
+  code: string
+  name: string
+}
+
+/** An exam sitting across the college, such as "Nov/Dec 2026" or "Internal test 1". */
+export interface Sitting {
+  id: string
+  name: string
+  kind: SittingKind
+  academic_year: string
+}
+
+/** The college's structure: departments, their programmes, the subjects of each term, and exam sittings. */
+export interface Catalog {
+  institution: { name: string }
+  departments: Department[]
+  programmes: Programme[]
+  subjects: Subject[]
+  sittings: Sitting[]
+}
+
+export type CatalogCollection = 'departments' | 'programmes' | 'subjects' | 'sittings'
+export type CatalogItemIn<C extends CatalogCollection> = Omit<Catalog[C][number], 'id'>
 
 export interface ExamDraft {
   name: string
@@ -277,7 +336,27 @@ export const api = {
 
   getExam: (examId: string) => request<Exam>(`/api/exams/${examId}`),
 
-  createExam: (draft: ExamDraft) => request<Exam>('/api/exams', jsonBody(draft)),
+  createExam: (draft: ExamDraft & Partial<Placement>) => request<Exam>('/api/exams', jsonBody(draft)),
+
+  /** Make an evaluator a subject's paper in an exam sitting, or (with nulls) take it out of the structure. */
+  placeExam: (examId: string, placement: Placement) =>
+    request<Exam>(`/api/exams/${examId}/placement`, jsonBody(placement, 'PATCH')),
+
+  getCatalog: () => request<Catalog>('/api/catalog'),
+
+  setInstitution: (name: string) => request<Catalog>('/api/catalog/institution', jsonBody({ name }, 'PUT')),
+
+  addCatalogItem: <C extends CatalogCollection>(collection: C, item: CatalogItemIn<C>) =>
+    request<Catalog>(`/api/catalog/${collection}`, jsonBody(item)),
+
+  updateCatalogItem: <C extends CatalogCollection>(collection: C, id: string, item: CatalogItemIn<C>) =>
+    request<Catalog>(`/api/catalog/${collection}/${id}`, jsonBody(item, 'PUT')),
+
+  deleteCatalogItem: (collection: CatalogCollection, id: string) =>
+    request<Catalog>(`/api/catalog/${collection}/${id}`, { method: 'DELETE' }),
+
+  /** Fill an empty structure with a made-up college. */
+  loadSampleCatalog: () => request<Catalog>('/api/catalog/sample', { method: 'POST' }),
 
   updateExam: (examId: string, draft: ExamDraft) => request<Exam>(`/api/exams/${examId}`, jsonBody(draft, 'PUT')),
 

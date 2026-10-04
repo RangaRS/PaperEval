@@ -9,7 +9,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 
-from . import api, grading_api
+from . import api, catalog_api, grading_api
+from .catalog import CatalogStore
 from .config import Settings
 from .evaluations import EvaluationStore, adopt_marked_papers
 from .exams import ExamStore
@@ -24,6 +25,7 @@ def create_app(settings: Settings | None = None, *, ollama: OllamaClient | None 
     store = DocumentStore(settings.data_dir)
     exam_store = ExamStore(settings.data_dir)
     evaluation_store = EvaluationStore(settings.data_dir)
+    catalog_store = CatalogStore(settings.data_dir)
     ollama = ollama or OllamaClient(
         settings.ollama_base_url,
         api_key=settings.ollama_api_key,
@@ -53,9 +55,11 @@ def create_app(settings: Settings | None = None, *, ollama: OllamaClient | None 
     app.state.store = store
     app.state.exam_store = exam_store
     app.state.evaluation_store = evaluation_store
+    app.state.catalog_store = catalog_store
     app.state.ollama = ollama
     app.include_router(api.router)
     app.include_router(grading_api.router)
+    app.include_router(catalog_api.router)
 
     # Serve the production build of the frontend, if there is one.
     if (settings.frontend_dist / "index.html").is_file():

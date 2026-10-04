@@ -1,9 +1,10 @@
-import { CloudOff, FileUp, RefreshCw, TriangleAlert } from 'lucide-react'
+import { CalendarDays, CloudOff, FileUp, FolderInput, RefreshCw, TriangleAlert } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 
 import {
   api,
   type AppConfig,
+  type Catalog,
   type DocumentInfo,
   type DocumentRole,
   type Evaluation,
@@ -11,15 +12,32 @@ import {
   type Exam,
   type ExamSummary,
   type OllamaStatus,
+  type Placement,
 } from './api'
+import {
+  currentSitting,
+  emptyCatalog,
+  hasStructure,
+  paperOf,
+  pathTo,
+  scopeTitle,
+  SITTING_KINDS,
+  subjectLabel,
+  type Scope,
+} from './college'
+import { Breadcrumb } from './components/Breadcrumb'
+import { CollegeNav, type NavSelection } from './components/CollegeNav'
 import { EvaluationPanel } from './components/EvaluationPanel'
-import { EvaluatorList } from './components/EvaluatorList'
 import { EvaluatorView } from './components/EvaluatorView'
 import { Header } from './components/Header'
 import { KeyStep } from './components/KeyStep'
+import { Overview } from './components/Overview'
 import { PapersStep } from './components/PapersStep'
+import { PlacementDialog } from './components/PlacementDialog'
 import { ResultsStep } from './components/ResultsStep'
 import { SettingsDialog } from './components/SettingsDialog'
+import { StructurePage } from './components/StructurePage'
+import { SubjectPage } from './components/SubjectPage'
 import { Toasts } from './components/Toasts'
 import { Welcome } from './components/Welcome'
 import { Workspace, type WorkspacePanel } from './components/Workspace'
@@ -38,6 +56,12 @@ const isPanel = (value: unknown): value is WorkspacePanel => value === 'text' ||
 /** What the main area shows. */
 type View =
   | { kind: 'home' }
+  /** How far every subject's paper has got, in a part of the college. */
+  | { kind: 'overview'; scope: Scope }
+  /** A subject that has no paper in the exam sitting yet. */
+  | { kind: 'subject'; subjectId: string }
+  /** Setting up the college's departments, programmes, subjects and exam sittings. */
+  | { kind: 'structure' }
   | { kind: 'evaluator'; examId: string; tab: EvaluatorTab }
   /** A document of an evaluator, page by page: an answer paper with its marks, or the key file. */
   | { kind: 'document'; examId: string; documentId: string; pageNumber: number }
@@ -54,12 +78,36 @@ interface UploadProgress {
  * What to show: the chosen view, or when nothing was chosen yet (or what was chosen was deleted),
  * the evaluator used last. It opens on its answer papers once it has questions.
  */
-function currentView(chosen: View | null, exams: ExamSummary[], documents: DocumentInfo[], last: string): View {
-  const fallback = exams.find((exam) => exam.id === last) ?? exams[0]
+function currentView(
+  chosen: View | null,
+  exams: ExamSummary[],
+  documents: DocumentInfo[],
+  catalog: Catalog,
+  last: string,
+): View {
+  const structured = hasStructure(catalog)
+  const overview: View = { kind: 'overview', scope: { kind: 'institution' } }
+  const fallback = exams.find((exam) => exam.id === last) ?? (structured ? undefined : exams[0])
   const start: View = fallback
     ? { kind: 'evaluator', examId: fallback.id, tab: fallback.question_count > 0 ? 'papers' : 'key' }
-    : { kind: 'home' }
-  if (!chosen || chosen.kind === 'home') return chosen ?? start
+    : structured
+      ? overview
+      : { kind: 'home' }
+  if (!chosen) return start
+  if (chosen.kind === 'home') return structured ? overview : chosen
+  if (chosen.kind === 'structure') return chosen
+  if (chosen.kind === 'subject') {
+    return catalog.subjects.some((subject) => subject.id === chosen.subjectId) ? chosen : start
+  }
+  if (chosen.kind === 'overview') {
+    const scope = chosen.scope
+    const exists =
+      scope.kind === 'institution' ||
+      (scope.kind === 'department'
+        ? catalog.departments.some((department) => department.id === scope.departmentId)
+        : catalog.programmes.some((programme) => programme.id === scope.programmeId))
+    return exists ? chosen : start
+  }
   const examId = chosen.examId
   if (!exams.some((exam) => exam.id === examId)) return start
   if (chosen.kind === 'document' && !documents.some((document) => document.id === chosen.documentId)) {
@@ -101,11 +149,15 @@ export default function App() {
   const [panel, setPanel] = useLocalStorage<WorkspacePanel>('papereval.panel', 'marks', isPanel)
   const [answerPreview, setAnswerPreview] = useLocalStorage('papereval.answerPreview', true, isBoolean)
   const [lastEvaluator, setLastEvaluator] = useLocalStorage('papereval.evaluator', '', isString)
+  const [chosenSitting, setChosenSitting] = useLocalStorage('papereval.sitting', '', isString)
+  const [expanded, setExpanded] = useLocalStorage<string[]>('papereval.expanded', [], isStringArray)
   const { toasts, notify, dismiss: dismissToast } = useToasts()
 
   const [documents, setDocuments] = useState<DocumentInfo[]>([])
   const [exams, setExams] = useState<ExamSummary[]>([])
   const [evaluations, setEvaluations] = useState<EvaluationSummary[]>([])
+  const [catalog, setCatalog] = useState<Catalog>(emptyCatalog)
+  const [placingExamId, setPlacingExamId] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
   const [details, setDetails] = useState<Record<string, Evaluation>>({})
   const [examDetails, setExamDetails] = useState<Record<string, Exam>>({})
@@ -159,11 +211,12 @@ export default function App() {
       .config()
       .then(setConfig)
       .catch((error) => notify(errorMessage(error)))
-    Promise.all([api.listDocuments(), api.listExams(), api.listEvaluations()])
-      .then(([loadedDocuments, loadedExams, loadedEvaluations]) => {
+    Promise.all([api.listDocuments(), api.listExams(), api.listEvaluations(), api.getCatalog()])
+      .then(([loadedDocuments, loadedExams, loadedEvaluations, loadedCatalog]) => {
         updateDocuments(() => loadedDocuments)
         setExams(loadedExams)
         setEvaluations(loadedEvaluations)
+        setCatalog(loadedCatalog)
       })
       .catch((error) => notify(`Could not load your evaluators: ${errorMessage(error)}`))
       .finally(() => setLoading(false))
@@ -266,9 +319,10 @@ export default function App() {
 
   // ---------- What is shown ----------
 
-  const view = currentView(chosenView, exams, documents, lastEvaluator)
-  const currentExamId = view.kind === 'home' ? null : view.examId
+  const view = currentView(chosenView, exams, documents, catalog, lastEvaluator)
+  const currentExamId = view.kind === 'evaluator' || view.kind === 'document' ? view.examId : null
   const summary = exams.find((exam) => exam.id === currentExamId)
+  const sitting = currentSitting(catalog, chosenSitting)
 
   const navigate = (next: View): boolean => {
     const leavingEvaluator = view.kind === 'evaluator' && (next.kind !== 'evaluator' || next.examId !== view.examId)
@@ -277,9 +331,29 @@ export default function App() {
     }
     if (leavingEvaluator) editorDirty.current = false
     setChosenView(next)
-    if (next.kind !== 'home') setLastEvaluator(next.examId)
+    if (next.kind === 'evaluator' || next.kind === 'document') {
+      setLastEvaluator(next.examId)
+      // Show the sidebar for the sitting the paper is in.
+      const sittingId = exams.find((exam) => exam.id === next.examId)?.sitting_id
+      if (sittingId) setChosenSitting(sittingId)
+    } else {
+      setLastEvaluator('')
+    }
     return true
   }
+
+  const openExam = (exam: ExamSummary) =>
+    navigate({ kind: 'evaluator', examId: exam.id, tab: exam.question_count > 0 ? 'papers' : 'key' })
+
+  /** A subject's paper in an exam sitting, or the subject's page when it has none there yet. */
+  const openSubject = (subjectId: string, sittingId = sitting?.id) => {
+    const exam = paperOf(exams, subjectId, sittingId)
+    if (exam) openExam(exam)
+    else navigate({ kind: 'subject', subjectId })
+  }
+
+  const toggleExpanded = (id: string) =>
+    setExpanded((current) => (current.includes(id) ? current.filter((item) => item !== id) : [...current, id]))
 
   const setEditorDirty = useCallback((dirty: boolean) => {
     editorDirty.current = dirty
@@ -316,10 +390,10 @@ export default function App() {
     )
   }
 
-  const createEvaluator = async () => {
+  const createEvaluator = async (placement?: Placement, name = 'Untitled evaluator') => {
     if (view.kind === 'evaluator' && editorDirty.current && !window.confirm('Discard the unsaved changes?')) return
     try {
-      const exam = await api.createExam({ name: 'Untitled evaluator', questions: [] })
+      const exam = await api.createExam({ name, questions: [], ...placement })
       setExams((current) => [summaryOf(exam), ...current])
       setExamDetails((current) => ({ ...current, [exam.id]: exam }))
       editorDirty.current = false
@@ -354,7 +428,40 @@ export default function App() {
     setExams((current) => current.filter((candidate) => candidate.id !== exam.id))
     updateDocuments((current) => current.filter((document) => document.exam_id !== exam.id))
     setEvaluations((current) => current.filter((evaluation) => evaluation.exam_id !== exam.id))
-    setChosenView(null)
+    setChosenView(exam.subject_id ? { kind: 'subject', subjectId: exam.subject_id } : null)
+    setLastEvaluator('')
+  }
+
+  /** Set up a subject's paper for the exam sitting being shown. */
+  const createPaper = async (subjectId: string) => {
+    const subject = catalog.subjects.find((candidate) => candidate.id === subjectId)
+    if (!subject || !sitting) return
+    await createEvaluator(
+      { subject_id: subject.id, sitting_id: sitting.id },
+      `${subjectLabel(subject)} · ${sitting.name}`,
+    )
+  }
+
+  /** Make an evaluator a subject's paper in a sitting, or take it out of the structure. Throws if it can't. */
+  const placeExam = async (examId: string, placement: Placement) => {
+    const exam = await api.placeExam(examId, placement)
+    examSaved(exam)
+    if (exam.sitting_id) setChosenSitting(exam.sitting_id)
+  }
+
+  const loadSample = async () => {
+    try {
+      const loaded = await api.loadSampleCatalog()
+      setCatalog(loaded)
+      setChosenSitting(loaded.sittings.at(-1)?.id ?? '')
+      navigate({ kind: 'overview', scope: { kind: 'institution' } })
+      notify(
+        `Added ${loaded.institution.name}. Pick a subject on the left to set up its paper, or change anything under College structure.`,
+        'info',
+      )
+    } catch (error) {
+      notify(`Could not add the sample college: ${errorMessage(error)}`)
+    }
   }
 
   // ---------- Reading the key file ----------
@@ -550,8 +657,8 @@ export default function App() {
   }
 
   const dragging = useFileDrop((files) => {
-    if (view.kind === 'home') {
-      notify('Create an evaluator first, then drop the files into it.', 'info')
+    if (view.kind !== 'evaluator' && view.kind !== 'document') {
+      notify("Open a subject's paper or an evaluator first, then drop the files into it.", 'info')
     } else if (view.kind === 'evaluator' && view.tab === 'key') {
       uploadKey(view.examId, files)
     } else {
@@ -699,16 +806,101 @@ export default function App() {
 
   useEffect(() => {
     const document = view.kind === 'document' ? documents.find((candidate) => candidate.id === view.documentId) : null
-    const title = document?.filename ?? summary?.name
+    const subject =
+      view.kind === 'subject' ? catalog.subjects.find((candidate) => candidate.id === view.subjectId) : undefined
+    const title =
+      document?.filename ??
+      summary?.name ??
+      (subject
+        ? subjectLabel(subject)
+        : view.kind === 'structure'
+          ? 'College structure'
+          : view.kind === 'overview'
+            ? scopeTitle(catalog, view.scope)
+            : undefined)
     window.document.title = title ? `${title} · PaperEval` : 'PaperEval'
-  }, [view, documents, summary])
+  }, [view, documents, summary, catalog])
 
   const accepted = config?.accepted_extensions ?? ['.pdf', '.png', '.jpg', '.jpeg', '.webp', '.tif', '.tiff']
   const hasModels = offeredNames(groups).length > 0
   const looseDocuments = documents.filter((document) => !document.exam_id)
+  const working = new Set(
+    exams
+      .filter(
+        (exam) =>
+          isKeyReading(keyReads[exam.id]) ||
+          documents.some((document) => document.exam_id === exam.id && isRunning(runs.get(document.id))),
+      )
+      .map((exam) => exam.id),
+  )
+  const selectScope = (scope: Scope) => navigate({ kind: 'overview', scope })
+  const openStructure = () => navigate({ kind: 'structure' })
 
   const main = () => {
-    if (view.kind === 'home' || !summary) return <Welcome loading={loading} onCreate={() => void createEvaluator()} />
+    if (view.kind === 'structure') {
+      return (
+        <StructurePage
+          catalog={catalog}
+          exams={exams}
+          onChange={setCatalog}
+          onLoadSample={() => void loadSample()}
+          onError={notify}
+        />
+      )
+    }
+    if (view.kind === 'overview') {
+      return (
+        <Overview
+          catalog={catalog}
+          scope={view.scope}
+          sitting={sitting}
+          exams={exams}
+          documents={documents}
+          evaluations={evaluations}
+          working={working}
+          onSelectScope={selectScope}
+          onSelectSubject={openSubject}
+          onOpenStructure={openStructure}
+        />
+      )
+    }
+    if (view.kind === 'subject') {
+      const subject = catalog.subjects.find((candidate) => candidate.id === view.subjectId)
+      if (!subject) return null
+      return (
+        <SubjectPage
+          key={subject.id}
+          catalog={catalog}
+          subject={subject}
+          sitting={sitting}
+          exams={exams}
+          onSelectScope={selectScope}
+          onCreatePaper={() => createPaper(subject.id)}
+          onUseEvaluator={async (examId) => {
+            if (!sitting) return
+            try {
+              await placeExam(examId, { subject_id: subject.id, sitting_id: sitting.id })
+              const exam = exams.find((candidate) => candidate.id === examId)
+              if (exam) openExam(exam)
+            } catch (error) {
+              notify(errorMessage(error))
+            }
+          }}
+          onOpenPaper={openExam}
+          onOpenStructure={openStructure}
+        />
+      )
+    }
+    if (view.kind === 'home' || !summary) {
+      return (
+        <Welcome
+          loading={loading}
+          onLoadSample={() => void loadSample()}
+          onOpenStructure={openStructure}
+          onCreate={() => void createEvaluator()}
+        />
+      )
+    }
     const examId = summary.id
     const exam = examDetails[examId]
     const keyDocument = documents.find((document) => document.id === summary.key_document_id)
@@ -793,6 +985,7 @@ export default function App() {
         onDelete={() => void deleteEvaluator(summary)}
         onDirtyChange={setEditorDirty}
         onError={notify}
+        context={evaluatorContext(summary)}
       >
         {(draft, change, dirty) =>
           tab === 'key' ? (
@@ -862,6 +1055,54 @@ export default function App() {
     )
   }
 
+  /** Where an evaluator sits in the college, with a way to file it under a subject or move it. */
+  function evaluatorContext(exam: ExamSummary) {
+    const examSitting = catalog.sittings.find((candidate) => candidate.id === exam.sitting_id)
+    if (!exam.subject_id || !examSitting) {
+      if (catalog.subjects.length === 0 || catalog.sittings.length === 0) return undefined
+      return (
+        <div className="exam-placement">
+          <span className="muted">Not filed under a subject</span>
+          <button type="button" className="link-btn" onClick={() => setPlacingExamId(exam.id)}>
+            <FolderInput size={14} aria-hidden />
+            File under a subject
+          </button>
+        </div>
+      )
+    }
+    const path = pathTo(catalog, { kind: 'subject', subjectId: exam.subject_id })
+    return (
+      <div className="exam-placement">
+        <Breadcrumb
+          items={path.map((step) => {
+            const scope = step.scope
+            return { label: step.label, onClick: scope ? () => selectScope(scope) : undefined }
+          })}
+        />
+        <span className="chip chip-sitting" title={SITTING_KINDS[examSitting.kind]}>
+          <CalendarDays size={12} aria-hidden />
+          {examSitting.name}
+          {examSitting.academic_year && ` · ${examSitting.academic_year}`}
+        </span>
+        <button type="button" className="link-btn link-btn-quiet" onClick={() => setPlacingExamId(exam.id)}>
+          Move
+        </button>
+      </div>
+    )
+  }
+
+  const placing = exams.find((exam) => exam.id === placingExamId)
+  const selection: NavSelection =
+    view.kind === 'overview'
+      ? { kind: 'scope', scope: view.scope }
+      : view.kind === 'subject'
+        ? { kind: 'subject', subjectId: view.subjectId }
+        : view.kind === 'structure'
+          ? { kind: 'structure' }
+          : currentExamId
+            ? { kind: 'exam', examId: currentExamId }
+            : { kind: 'none' }
+
   return (
     <div className="app">
       <Header
@@ -912,22 +1153,47 @@ export default function App() {
       )}
 
       <div className="main">
-        <EvaluatorList
+        <CollegeNav
+          catalog={catalog}
+          sitting={sitting}
           exams={exams}
-          loading={loading}
           documents={documents}
           evaluations={evaluations}
           runs={runs}
           keyReads={keyReads}
-          selectedId={currentExamId}
-          onSelect={(examId) => {
-            const questions = exams.find((exam) => exam.id === examId)?.question_count ?? 0
-            navigate({ kind: 'evaluator', examId, tab: questions > 0 ? 'papers' : 'key' })
+          loading={loading}
+          selection={selection}
+          expanded={expanded}
+          onToggle={toggleExpanded}
+          onSittingChange={(sittingId) => {
+            setChosenSitting(sittingId)
+            // A paper belongs to one sitting: show the same subject in the new one.
+            const subjectId = view.kind === 'subject' ? view.subjectId : summary?.subject_id
+            if (subjectId) openSubject(subjectId, sittingId)
           }}
-          onCreate={() => void createEvaluator()}
+          onSelectScope={selectScope}
+          onSelectSubject={(subjectId) => openSubject(subjectId)}
+          onSelectExam={(examId) => {
+            const exam = exams.find((candidate) => candidate.id === examId)
+            if (exam) openExam(exam)
+          }}
+          onCreateEvaluator={() => void createEvaluator()}
+          onOpenStructure={openStructure}
+          onLoadSample={() => void loadSample()}
         />
         <main className="content">{main()}</main>
       </div>
+
+      {placing && (
+        <PlacementDialog
+          open={placingExamId !== null}
+          catalog={catalog}
+          exam={placing}
+          defaultSittingId={sitting?.id}
+          onClose={() => setPlacingExamId(null)}
+          onSave={(placement) => placeExam(placing.id, placement)}
+        />
+      )}
 
       <SettingsDialog
         open={settingsOpen}
@@ -949,9 +1215,9 @@ export default function App() {
             <p>
               {view.kind === 'evaluator' && view.tab === 'key'
                 ? 'Drop the question paper with its answer key'
-                : view.kind === 'home'
-                  ? 'Create an evaluator first'
-                  : 'Drop the answer papers to mark them'}
+                : view.kind === 'evaluator' || view.kind === 'document'
+                  ? 'Drop the answer papers to mark them'
+                  : "Open a subject's paper first"}
             </p>
           </div>
         </div>
